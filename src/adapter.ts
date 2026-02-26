@@ -121,12 +121,20 @@ export async function handleStreaming(
         const streamEvent = line as CLIStreamEvent;
         const event = streamEvent.event;
 
-        // Skip nested events from tool use (only forward top-level messages)
+        // Skip nested events from tool use
         if (streamEvent.parent_tool_use_id) {
           continue;
         }
 
+        // Debug: log every event type from CLI
+        console.log("[cli-event]", event.type, "parent:", streamEvent.parent_tool_use_id ?? "none");
+
         if (event.type === "message_start") {
+          // Only send the FIRST message_start, skip all subsequent ones
+          if (sentMessageStart) {
+            console.log("[adapter] Skipping duplicate message_start");
+            continue;
+          }
           const msg = event.message || {};
           sendSSE(res, "message_start", {
             type: "message_start",
@@ -147,21 +155,37 @@ export async function handleStreaming(
           });
           sentMessageStart = true;
         } else if (event.type === "content_block_start") {
+          if (!sentMessageStart) continue;
+          // Only forward text blocks, skip tool_use blocks
+          if (event.content_block && (event.content_block as any).type === "tool_use") {
+            continue;
+          }
           sendSSE(res, "content_block_start", event);
           hasOpenBlock = true;
           contentBlockIndex = (event.index ?? contentBlockIndex) + 1;
         } else if (event.type === "content_block_delta") {
+          if (!sentMessageStart) continue;
+          // Only forward text deltas
+          const deltaType = (event.delta as any)?.type;
+          if (deltaType && deltaType !== "text_delta") {
+            continue;
+          }
           sendSSE(res, "content_block_delta", event);
-          if (event.delta && (event.delta as any).type === "text_delta") {
+          if (deltaType === "text_delta") {
             resultText += (event.delta as any).text || "";
           }
         } else if (event.type === "content_block_stop") {
+          if (!sentMessageStart || !hasOpenBlock) continue;
           sendSSE(res, "content_block_stop", event);
           hasOpenBlock = false;
         } else if (event.type === "message_delta") {
-          sendSSE(res, "message_delta", event);
+          if (!sentMessageStart) continue;
+          // Don't forward message_delta from mid-stream, we send our own at the end
+          continue;
         } else if (event.type === "message_stop") {
-          sendSSE(res, "message_stop", event);
+          // Don't forward message_stop from CLI — we send our own after result
+          console.log("[adapter] Skipping CLI message_stop (will send after result)");
+          continue;
         } else if (event.type === "ping") {
           sendSSE(res, "ping", { type: "ping" });
         }
