@@ -25,6 +25,13 @@ do_start() {
 
   echo "启动 Claude Code Adapter (Port: $PORT)..."
   cd "$PROJECT_DIR" || exit 1
+
+  # Clean Claude-related env vars to prevent nested session issues
+  unset CLAUDECODE CLAUDE_DEV 2>/dev/null
+  for var in $(env | grep -oE '^CLAUDE_(CODE|AGENT)_[^=]+'); do
+    unset "$var" 2>/dev/null
+  done
+
   nohup npx tsx src/index.ts > "$LOG_FILE" 2>&1 &
   local pid=$!
   echo "$pid" > "$PID_FILE"

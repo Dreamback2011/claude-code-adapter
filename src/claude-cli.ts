@@ -14,10 +14,16 @@ export interface CLIOptions {
   maxBudgetUsd?: number;
 }
 
+// Timeout: kill CLI if no output for this many ms
+const CLI_IDLE_TIMEOUT_MS = 120_000; // 2 minutes
+// Hard timeout: kill CLI after this many ms regardless
+const CLI_HARD_TIMEOUT_MS = 300_000; // 5 minutes
+
 /**
  * Invoke Claude Code CLI in non-interactive mode.
  * Always uses stream-json for responsiveness.
  * Returns an async iterable of parsed JSON lines.
+ * Includes idle and hard timeouts to prevent hanging.
  */
 export async function* invokeClaudeCLI(
   options: CLIOptions
@@ -30,7 +36,12 @@ export async function* invokeClaudeCLI(
   // to prevent nested session detection
   const env = { ...process.env };
   for (const key of Object.keys(env)) {
-    if (key === "CLAUDECODE" || key.startsWith("CLAUDE_CODE_") || key.startsWith("CLAUDE_AGENT_")) {
+    if (
+      key === "CLAUDECODE" ||
+      key.startsWith("CLAUDE_CODE_") ||
+      key.startsWith("CLAUDE_AGENT_") ||
+      key === "CLAUDE_DEV"
+    ) {
       delete env[key];
     }
   }
@@ -57,23 +68,49 @@ export async function* invokeClaudeCLI(
     console.error("[cli] Process error:", err.message);
   });
 
+  // Hard timeout — kill process after max time
+  const hardTimer = setTimeout(() => {
+    console.error("[cli] Hard timeout reached, killing process", proc.pid);
+    killProc(proc);
+  }, CLI_HARD_TIMEOUT_MS);
+
+  // Idle timeout — kill if no output for a while
+  let idleTimer = setTimeout(() => {
+    console.error("[cli] Idle timeout reached, killing process", proc.pid);
+    killProc(proc);
+  }, CLI_IDLE_TIMEOUT_MS);
+
+  const resetIdleTimer = () => {
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => {
+      console.error("[cli] Idle timeout reached, killing process", proc.pid);
+      killProc(proc);
+    }, CLI_IDLE_TIMEOUT_MS);
+  };
+
   const rl = createInterface({ input: proc.stdout! });
   let lineCount = 0;
 
-  for await (const line of rl) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    try {
-      const parsed: CLIOutputLine = JSON.parse(trimmed);
-      lineCount++;
-      if (lineCount <= 3 || parsed.type === "result") {
-        console.log("[cli] Event:", parsed.type, lineCount <= 3 ? "" : `(total: ${lineCount})`);
+  try {
+    for await (const line of rl) {
+      resetIdleTimer();
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      try {
+        const parsed: CLIOutputLine = JSON.parse(trimmed);
+        lineCount++;
+        if (lineCount <= 3 || parsed.type === "result") {
+          console.log("[cli] Event:", parsed.type, lineCount <= 3 ? "" : `(total: ${lineCount})`);
+        }
+        yield parsed;
+      } catch {
+        // Non-JSON line (debug output, etc.)
+        console.log("[cli:raw]", trimmed.slice(0, 200));
       }
-      yield parsed;
-    } catch {
-      // Non-JSON line (debug output, etc.)
-      console.log("[cli:raw]", trimmed.slice(0, 200));
     }
+  } finally {
+    clearTimeout(hardTimer);
+    clearTimeout(idleTimer);
   }
 
   console.log("[cli] Stream ended, total events:", lineCount);
@@ -120,8 +157,21 @@ function buildArgs(options: CLIOptions): string[] {
   return args;
 }
 
+function killProc(proc: ChildProcess): void {
+  try {
+    proc.kill("SIGTERM");
+    setTimeout(() => {
+      try { proc.kill("SIGKILL"); } catch {}
+    }, 3000);
+  } catch {}
+}
+
 function waitForExit(proc: ChildProcess): Promise<number> {
   return new Promise((resolve) => {
+    if (proc.exitCode !== null) {
+      resolve(proc.exitCode);
+      return;
+    }
     proc.on("close", (code) => resolve(code ?? 0));
     proc.on("error", () => resolve(1));
   });

@@ -40,8 +40,12 @@ function buildCLIOptions(req: AnthropicRequest, allowedTools: string): CLIOption
     prompt: extractPrompt(req.messages),
     systemPrompt: extractSystemPrompt(req.system),
     allowedTools,
+    model: req.model || undefined,
   };
 }
+
+const MAX_RETRIES = 2;
+const RETRY_DELAY_MS = 1000;
 
 /**
  * Handle a non-streaming request.
@@ -51,38 +55,53 @@ export async function handleNonStreaming(
   req: AnthropicRequest,
   allowedTools: string
 ): Promise<AnthropicResponse> {
-  console.log("[adapter] handleNonStreaming - starting CLI");
   const cliOptions = buildCLIOptions(req, allowedTools);
+  let lastError: Error | null = null;
 
-  let resultText = "";
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    if (attempt > 0) {
+      console.log(`[adapter] handleNonStreaming - retry ${attempt}/${MAX_RETRIES}`);
+      await new Promise((r) => setTimeout(r, RETRY_DELAY_MS * attempt));
+    }
 
-  for await (const line of invokeClaudeCLI(cliOptions)) {
-    if (line.type === "result") {
-      const r = line as CLIResultEvent;
-      resultText = r.result || resultText;
-    } else if (line.type === "stream_event") {
-      const se = line as CLIStreamEvent;
-      if (se.event?.type === "content_block_delta") {
-        const delta = se.event.delta as any;
-        if (delta?.type === "text_delta") {
-          resultText += delta.text || "";
+    console.log("[adapter] handleNonStreaming - starting CLI (attempt", attempt + 1, ")");
+    let resultText = "";
+
+    try {
+      for await (const line of invokeClaudeCLI(cliOptions)) {
+        if (line.type === "result") {
+          const r = line as CLIResultEvent;
+          resultText = r.result || resultText;
+        } else if (line.type === "stream_event") {
+          const se = line as CLIStreamEvent;
+          if (se.event?.type === "content_block_delta") {
+            const delta = se.event.delta as any;
+            if (delta?.type === "text_delta") {
+              resultText += delta.text || "";
+            }
+          }
         }
       }
+
+      console.log("[adapter] handleNonStreaming - done, result length:", resultText.length);
+
+      return {
+        id: `msg_${uuidv4().replace(/-/g, "").slice(0, 20)}`,
+        type: "message",
+        role: "assistant",
+        content: [{ type: "text", text: resultText || "(no response)" }],
+        model: req.model || "claude-sonnet-4-6",
+        stop_reason: "end_turn",
+        stop_sequence: null,
+        usage: { input_tokens: 0, output_tokens: 0 },
+      };
+    } catch (err: any) {
+      lastError = err;
+      console.error(`[adapter] handleNonStreaming attempt ${attempt + 1} failed:`, err.message);
     }
   }
 
-  console.log("[adapter] handleNonStreaming - done, result length:", resultText.length);
-
-  return {
-    id: `msg_${uuidv4().replace(/-/g, "").slice(0, 20)}`,
-    type: "message",
-    role: "assistant",
-    content: [{ type: "text", text: resultText || "(no response)" }],
-    model: req.model || "claude-sonnet-4-6",
-    stop_reason: "end_turn",
-    stop_sequence: null,
-    usage: { input_tokens: 0, output_tokens: 0 },
-  };
+  throw lastError || new Error("All retry attempts failed");
 }
 
 /**
@@ -215,7 +234,58 @@ export async function handleStreaming(
   } catch (err: any) {
     console.error("[adapter] Stream error:", err.message);
     if (!sentMessageStart) {
-      sendSyntheticStream(res, msgId, req.model || "claude-sonnet-4-6", `Error: ${err.message}`);
+      // Retry once if we haven't sent any data yet
+      console.log("[adapter] Attempting stream retry...");
+      try {
+        await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+        for await (const line of invokeClaudeCLI(cliOptions)) {
+          if (res.closed) break;
+
+          if (line.type === "stream_event") {
+            const streamEvent = line as CLIStreamEvent;
+            const event = streamEvent.event;
+            if (streamEvent.parent_tool_use_id) continue;
+
+            if (event.type === "message_start" && !sentMessageStart) {
+              sendSSE(res, "message_start", {
+                type: "message_start",
+                message: {
+                  id: msgId, type: "message", role: "assistant", content: [],
+                  model: req.model || "claude-sonnet-4-6",
+                  stop_reason: null, stop_sequence: null,
+                  usage: { input_tokens: 0, output_tokens: 0 },
+                },
+              });
+              sentMessageStart = true;
+            } else if (event.type === "content_block_start" && sentMessageStart) {
+              if (event.content_block && (event.content_block as any).type === "tool_use") continue;
+              sendSSE(res, "content_block_start", event);
+              hasOpenBlock = true;
+            } else if (event.type === "content_block_delta" && sentMessageStart) {
+              const deltaType = (event.delta as any)?.type;
+              if (deltaType && deltaType !== "text_delta") continue;
+              sendSSE(res, "content_block_delta", event);
+            } else if (event.type === "content_block_stop" && sentMessageStart && hasOpenBlock) {
+              sendSSE(res, "content_block_stop", event);
+              hasOpenBlock = false;
+            }
+          } else if (line.type === "result") {
+            const resultEvent = line as CLIResultEvent;
+            resultText = resultEvent.result || resultText;
+            if (!sentMessageStart) {
+              sendSyntheticStream(res, msgId, req.model || "claude-sonnet-4-6", resultText);
+              sentMessageStart = true;
+            } else {
+              if (hasOpenBlock) sendSSE(res, "content_block_stop", { type: "content_block_stop", index: 0 });
+              sendSSE(res, "message_delta", { type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 0 } });
+              sendSSE(res, "message_stop", { type: "message_stop" });
+            }
+          }
+        }
+      } catch (retryErr: any) {
+        console.error("[adapter] Stream retry also failed:", retryErr.message);
+        sendSyntheticStream(res, msgId, req.model || "claude-sonnet-4-6", `Error: ${retryErr.message}`);
+      }
     }
   }
 
