@@ -1,0 +1,8 @@
+{
+  "name": "claude-code-adapter",
+  "description": "Local Anthropic Messages API adapter that forwards requests to Claude Code CLI, enabling tools like OpenClaw to use Claude Code as a backend.",
+  "version": "1.0.0",
+  "author": {
+    "name": "dreamback"
+  }
+}
