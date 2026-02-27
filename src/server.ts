@@ -4,6 +4,13 @@ import { handleNonStreaming, handleStreaming } from "./adapter.js";
 import type { AnthropicRequest } from "./types.js";
 import type { AgentSquad } from "agent-squad";
 import { logMessage } from "./message-logger.js";
+import {
+  recordAgentUse,
+  rateRequest,
+  getAllAgentStats,
+  listGoodSamples,
+  readGoodSample,
+} from "./agent-learning.js";
 
 export interface ServerConfig {
   port: number;
@@ -66,6 +73,51 @@ export function createServer(config: ServerConfig) {
   });
   app.get("/models/:modelId", (_req, res) => {
     res.json(modelInfo);
+  });
+
+  // ── Agent Learning endpoints ──────────────────────────────────────────────
+
+  // POST /v1/agent-feedback — submit quality rating for a request
+  // Body: { requestId: string, rating: "good"|"bad", comment?: string }
+  app.post("/v1/agent-feedback", createAuthMiddleware(config.apiKey), (req, res) => {
+    const { requestId, rating, comment } = req.body as {
+      requestId?: string;
+      rating?: string;
+      comment?: string;
+    };
+
+    if (!requestId || !rating) {
+      res.status(400).json({ error: 'Missing required fields: requestId, rating ("good" or "bad")' });
+      return;
+    }
+    if (rating !== "good" && rating !== "bad") {
+      res.status(400).json({ error: 'rating must be "good" or "bad"' });
+      return;
+    }
+
+    const result = rateRequest(requestId, rating, comment);
+    res.json(result);
+  });
+
+  // GET /v1/agent-stats — learning stats for all agents
+  app.get("/v1/agent-stats", createAuthMiddleware(config.apiKey), (_req, res) => {
+    res.json(getAllAgentStats());
+  });
+
+  // GET /v1/agent-sessions/:agentId — list good samples for an agent
+  app.get("/v1/agent-sessions/:agentId", createAuthMiddleware(config.apiKey), (req, res) => {
+    const files = listGoodSamples(req.params.agentId);
+    res.json({ agentId: req.params.agentId, samples: files });
+  });
+
+  // GET /v1/agent-sessions/:agentId/:filename — read a specific sample
+  app.get("/v1/agent-sessions/:agentId/:filename", createAuthMiddleware(config.apiKey), (req, res) => {
+    const sample = readGoodSample(req.params.agentId, req.params.filename);
+    if (!sample) {
+      res.status(404).json({ error: "Sample not found" });
+      return;
+    }
+    res.json(sample);
   });
 
   // Messages endpoint — also without /v1 prefix
@@ -169,24 +221,49 @@ async function handleAgentSquad(
   const userId = "default";
   const sessionId = body.metadata?.user_id ?? "session-default";
 
-  console.log(`[squad] Routing request for session=${sessionId}, input="${userInput.slice(0, 100)}..."`);
+  // Unique ID for this specific request (used for learning feedback)
+  const requestId = uuidv4();
+
+  console.log(`[squad] Routing request for session=${sessionId}, requestId=${requestId}, input="${userInput.slice(0, 100)}..."`);
 
   const squad = await getSquad(config);
   const agentResponse = await squad.routeRequest(userInput, userId, sessionId);
 
-  const outputText = typeof agentResponse.output === "string"
+  const rawOutput = typeof agentResponse.output === "string"
     ? agentResponse.output
     : agentResponse.output instanceof Object && "getAccumulatedData" in (agentResponse.output as any)
       ? (agentResponse.output as any).getAccumulatedData()
       : String(agentResponse.output);
 
-  console.log(`[squad] Response from agent=${agentResponse.metadata.agentName}, length=${outputText.length}`);
+  const agentId: string = (agentResponse.metadata as any).agentId ?? "unknown";
+  const agentName: string = agentResponse.metadata.agentName ?? "Unknown";
+
+  console.log(`[squad] Response from agent=${agentName}, length=${rawOutput.length}`);
+
+  // Record this use for learning (non-blocking)
+  recordAgentUse({
+    requestId,
+    agentId,
+    agentName,
+    sessionId,
+    inputText: userInput,
+    outputText: rawOutput,
+    timestamp: new Date().toISOString(),
+  });
+
+  // Append a subtle feedback footer so the caller knows which agent responded
+  // and can submit rating via POST /v1/agent-feedback
+  const footer = `\n\n---\n_🤖 Agent: **${agentName}** | Feedback ID: \`${requestId}\`_`;
+  const outputText = rawOutput + footer;
 
   if (body.stream) {
     // Emit SSE stream with the result
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Connection", "keep-alive");
+    res.setHeader("X-Agent-Id", agentId);
+    res.setHeader("X-Agent-Name", agentName);
+    res.setHeader("X-Request-Id", requestId);
 
     const msgId = `msg_${uuidv4().replace(/-/g, "").slice(0, 20)}`;
 
@@ -222,6 +299,9 @@ async function handleAgentSquad(
 
     res.end();
   } else {
+    res.setHeader("X-Agent-Id", agentId);
+    res.setHeader("X-Agent-Name", agentName);
+    res.setHeader("X-Request-Id", requestId);
     res.json({
       id: `msg_${uuidv4().replace(/-/g, "").slice(0, 20)}`,
       type: "message",
