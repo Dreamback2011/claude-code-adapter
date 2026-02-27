@@ -1,4 +1,4 @@
-import { Agent, AgentOptions, AgentResponse } from "agent-squad";
+import { Agent, AgentOptions } from "agent-squad";
 import type { ConversationMessage } from "agent-squad";
 import { invokeClaudeCLI } from "../claude-cli.js";
 import type { CLIStreamEvent, CLIResultEvent } from "../types.js";
@@ -12,6 +12,9 @@ export interface ClaudeCodeAgentOptions extends AgentOptions {
 /**
  * Agent Squad agent that wraps our Claude Code CLI directly.
  * No HTTP roundtrip — calls invokeClaudeCLI() under the hood.
+ *
+ * IMPORTANT: processRequest must return ConversationMessage (not AgentResponse).
+ * The orchestrator's dispatchToAgent expects: { role, content: [{ text }] }
  */
 export class ClaudeCodeAgent extends Agent {
   private systemPrompt?: string;
@@ -31,7 +34,7 @@ export class ClaudeCodeAgent extends Agent {
     _sessionId: string,
     chatHistory: ConversationMessage[],
     _additionalParams?: Record<string, string>
-  ): Promise<AgentResponse> {
+  ): Promise<ConversationMessage> {
     // Build a prompt that includes recent conversation history
     const historyText = chatHistory
       .slice(-10) // last 5 turns
@@ -57,11 +60,15 @@ export class ClaudeCodeAgent extends Agent {
       })) {
         if (line.type === "result") {
           const r = line as CLIResultEvent;
-          resultText = r.result || resultText;
+          console.log(`[agent:${this.id}] result: streamed=${resultText.length} result=${(r.result || "").length}`);
+          if (!resultText && r.result) {
+            resultText = r.result;
+          }
         } else if (line.type === "stream_event") {
           const se = line as CLIStreamEvent;
-          if (se.event?.type === "content_block_delta") {
-            const delta = (se.event.delta as any);
+          const evt = se.event;
+          if (evt?.type === "content_block_delta") {
+            const delta = (evt.delta as any);
             if (delta?.type === "text_delta") {
               resultText += delta.text ?? "";
             }
@@ -72,17 +79,11 @@ export class ClaudeCodeAgent extends Agent {
       resultText = `[ClaudeCodeAgent error: ${err.message}]`;
     }
 
+    // Return ConversationMessage format — this is what the orchestrator expects
+    // dispatchToAgent reads: response.content[0].text
     return {
-      metadata: {
-        agentId: this.id,
-        agentName: this.name,
-        userId: _userId,
-        sessionId: _sessionId,
-        userInput: inputText,
-        additionalParams: _additionalParams ?? {},
-      },
-      output: resultText || "(no response)",
-      streaming: false,
+      role: "assistant" as any,
+      content: [{ text: resultText || "(no response)" }],
     };
   }
 }

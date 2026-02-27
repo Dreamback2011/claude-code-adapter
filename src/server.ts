@@ -4,6 +4,7 @@ import { handleNonStreaming, handleStreaming } from "./adapter.js";
 import type { AnthropicRequest } from "./types.js";
 import type { AgentSquad } from "agent-squad";
 import { logMessage } from "./message-logger.js";
+import { SessionStore } from "./session-store.js";
 import {
   recordAgentUse,
   rateRequest,
@@ -19,7 +20,11 @@ export interface ServerConfig {
   useAgentSquad?: boolean;
 }
 
-// Lazily initialized AgentSquad — created once on first use if enabled
+// Session store: maps external session IDs → Claude CLI session IDs
+// TTL = 24 hours, persists to .sessions.json
+const sessions = new SessionStore(24);
+
+// Lazily initialized AgentSquad
 let squadInstance: AgentSquad | null = null;
 
 async function getSquad(config: ServerConfig): Promise<AgentSquad> {
@@ -28,6 +33,19 @@ async function getSquad(config: ServerConfig): Promise<AgentSquad> {
     squadInstance = createSquad(config.allowedTools);
   }
   return squadInstance;
+}
+
+/**
+ * Extract session ID from request.
+ * Checks multiple sources so OpenClaw/Discord can send it however they want.
+ */
+function extractSessionId(req: express.Request, body: AnthropicRequest): string {
+  return (
+    (req.headers["x-session-id"] as string) ||
+    (body.metadata?.session_id as string) ||
+    (body.metadata?.user_id as string) ||
+    "default"
+  );
 }
 
 export function createServer(config: ServerConfig) {
@@ -44,9 +62,21 @@ export function createServer(config: ServerConfig) {
   // Auth middleware
   app.use("/v1", createAuthMiddleware(config.apiKey));
 
-  // Health check
+  // ── Health & Info ──────────────────────────────────────────────────────────
+
   app.get("/health", (_req, res) => {
-    res.json({ status: "ok", service: "claude-code-adapter" });
+    const stats = sessions.stats();
+    res.json({
+      status: "ok",
+      service: "claude-code-adapter",
+      sessions: stats.total,
+      agentSquad: config.useAgentSquad ? "enabled" : "disabled",
+    });
+  });
+
+  // Session monitoring endpoint
+  app.get("/v1/sessions", createAuthMiddleware(config.apiKey), (_req, res) => {
+    res.json(sessions.stats());
   });
 
   const modelInfo = {
@@ -66,8 +96,6 @@ export function createServer(config: ServerConfig) {
   app.get("/v1/models/:modelId", (_req, res) => {
     res.json(modelInfo);
   });
-
-  // Also serve models without /v1 prefix
   app.get("/models", (_req, res) => {
     res.json({ data: [modelInfo] });
   });
@@ -75,10 +103,8 @@ export function createServer(config: ServerConfig) {
     res.json(modelInfo);
   });
 
-  // ── Agent Learning endpoints ──────────────────────────────────────────────
+  // ── Agent Learning endpoints ───────────────────────────────────────────────
 
-  // POST /v1/agent-feedback — submit quality rating for a request
-  // Body: { requestId: string, rating: "good"|"bad", comment?: string }
   app.post("/v1/agent-feedback", createAuthMiddleware(config.apiKey), (req, res) => {
     const { requestId, rating, comment } = req.body as {
       requestId?: string;
@@ -99,18 +125,15 @@ export function createServer(config: ServerConfig) {
     res.json(result);
   });
 
-  // GET /v1/agent-stats — learning stats for all agents
   app.get("/v1/agent-stats", createAuthMiddleware(config.apiKey), (_req, res) => {
     res.json(getAllAgentStats());
   });
 
-  // GET /v1/agent-sessions/:agentId — list good samples for an agent
   app.get("/v1/agent-sessions/:agentId", createAuthMiddleware(config.apiKey), (req, res) => {
     const files = listGoodSamples(req.params.agentId);
     res.json({ agentId: req.params.agentId, samples: files });
   });
 
-  // GET /v1/agent-sessions/:agentId/:filename — read a specific sample
   app.get("/v1/agent-sessions/:agentId/:filename", createAuthMiddleware(config.apiKey), (req, res) => {
     const sample = readGoodSample(req.params.agentId, req.params.filename);
     if (!sample) {
@@ -120,9 +143,9 @@ export function createServer(config: ServerConfig) {
     res.json(sample);
   });
 
-  // Messages endpoint — also without /v1 prefix
+  // ── Messages endpoint ──────────────────────────────────────────────────────
+
   app.post("/messages", messagesHandler(config));
-  // Messages endpoint — core
   app.post("/v1/messages", messagesHandler(config));
 
   return app;
@@ -132,7 +155,9 @@ function messagesHandler(config: ServerConfig) {
   return async (req: express.Request, res: express.Response) => {
     const body = req.body as AnthropicRequest;
 
-    console.log("[messages] Body:", JSON.stringify(body).slice(0, 500));
+    // Extract session ID for multi-session support
+    const externalSessionId = extractSessionId(req, body);
+    console.log(`[messages] session=${externalSessionId} body=${JSON.stringify(body).slice(0, 300)}`);
 
     // Basic validation
     if (!body.messages || !Array.isArray(body.messages) || body.messages.length === 0) {
@@ -146,8 +171,7 @@ function messagesHandler(config: ServerConfig) {
       return;
     }
 
-    // Quick ping detection: if max_tokens <= 1 or message is very short,
-    // treat as verification and return instant synthetic response
+    // Quick ping detection
     const lastMsg = body.messages[body.messages.length - 1];
     const msgText = typeof lastMsg.content === "string"
       ? lastMsg.content
@@ -155,7 +179,7 @@ function messagesHandler(config: ServerConfig) {
     const isVerification = body.max_tokens <= 1 || msgText.length <= 2;
 
     if (isVerification) {
-      console.log("[messages] Verification ping detected, returning quick response");
+      console.log("[messages] Verification ping detected");
       const { v4: uuidv4 } = await import("uuid");
       res.json({
         id: `msg_${uuidv4().replace(/-/g, "").slice(0, 20)}`,
@@ -170,21 +194,49 @@ function messagesHandler(config: ServerConfig) {
       return;
     }
 
+    // Look up existing CLI session for this external session
+    const existingSession = sessions.get(externalSessionId);
+    const cliSessionId = existingSession?.cliSessionId;
+
+    if (cliSessionId) {
+      console.log(`[messages] Resuming CLI session: ${cliSessionId} (${existingSession!.messageCount} msgs)`);
+    } else {
+      console.log(`[messages] New CLI session for: ${externalSessionId}`);
+    }
+
     try {
       if (config.useAgentSquad) {
-        // Route through Agent Squad: classify intent → dispatch to specialist agent
-        await handleAgentSquad(body, res, config);
+        await handleAgentSquad(body, res, config, externalSessionId, cliSessionId);
       } else if (body.stream) {
-        const streamResult = await handleStreaming(body, res, config.allowedTools);
-        logMessage(msgText, streamResult);
+        const result = await handleStreaming(body, res, config.allowedTools, cliSessionId);
+
+        // Store CLI session ID for future resumption
+        if (result.cliSessionId) {
+          sessions.set(externalSessionId, result.cliSessionId);
+        }
+
+        logMessage(msgText, result.streamedText);
       } else {
-        const response = await handleNonStreaming(body, config.allowedTools);
-        const outText = response.content?.map((b: any) => b.text ?? "").join("") ?? "";
-        logMessage(msgText, outText, response.usage?.input_tokens, response.usage?.output_tokens);
-        res.json(response);
+        const result = await handleNonStreaming(body, config.allowedTools, cliSessionId);
+
+        // Store CLI session ID for future resumption
+        if (result.cliSessionId) {
+          sessions.set(externalSessionId, result.cliSessionId);
+        }
+
+        const outText = result.response.content?.map((b: any) => b.text ?? "").join("") ?? "";
+        logMessage(msgText, outText, result.response.usage?.input_tokens, result.response.usage?.output_tokens);
+        res.json(result.response);
       }
     } catch (err: any) {
       console.error("[adapter] Error:", err.message);
+
+      // If resume failed, clear the stale session so next request starts fresh
+      if (cliSessionId) {
+        console.log(`[sessions] Clearing stale session: ${externalSessionId}`);
+        sessions.remove(externalSessionId);
+      }
+
       if (!res.headersSent) {
         res.status(500).json({
           type: "error",
@@ -199,32 +251,28 @@ function messagesHandler(config: ServerConfig) {
 }
 
 /**
- * Route a request through Agent Squad:
- * 1. Classify intent → pick the best specialized agent
- * 2. Agent processes the request via Claude Code CLI
- * 3. Wrap result in Anthropic Messages API response format
+ * Route a request through Agent Squad.
+ * Also supports session resumption.
  */
 async function handleAgentSquad(
   body: AnthropicRequest,
   res: express.Response,
-  config: ServerConfig
+  config: ServerConfig,
+  externalSessionId: string,
+  cliSessionId?: string
 ): Promise<void> {
   const { v4: uuidv4 } = await import("uuid");
 
-  // Extract user input text
   const lastMsg = body.messages[body.messages.length - 1];
   const userInput = typeof lastMsg.content === "string"
     ? lastMsg.content
     : (lastMsg.content || []).filter((b: any) => b.type === "text").map((b: any) => b.text).join("");
 
-  // Use message ID as sessionId so the same conversation routes to the same agent context
   const userId = "default";
-  const sessionId = body.metadata?.user_id ?? "session-default";
-
-  // Unique ID for this specific request (used for learning feedback)
+  const sessionId = externalSessionId;
   const requestId = uuidv4();
 
-  console.log(`[squad] Routing request for session=${sessionId}, requestId=${requestId}, input="${userInput.slice(0, 100)}..."`);
+  console.log(`[squad] Routing: session=${sessionId}, requestId=${requestId}, resume=${cliSessionId ?? "none"}`);
 
   const squad = await getSquad(config);
   const agentResponse = await squad.routeRequest(userInput, userId, sessionId);
@@ -240,7 +288,6 @@ async function handleAgentSquad(
 
   console.log(`[squad] Response from agent=${agentName}, length=${rawOutput.length}`);
 
-  // Record this use for learning (non-blocking)
   recordAgentUse({
     requestId,
     agentId,
@@ -251,19 +298,15 @@ async function handleAgentSquad(
     timestamp: new Date().toISOString(),
   });
 
-  // Append a subtle feedback footer so the caller knows which agent responded
-  // and can submit rating via POST /v1/agent-feedback
-  const footer = `\n\n---\n_🤖 Agent: **${agentName}** | Feedback ID: \`${requestId}\`_`;
+  const footer = `\n\n---\n_Agent: **${agentName}** | Feedback ID: \`${requestId}\`_`;
   const outputText = rawOutput + footer;
 
   if (body.stream) {
-    // Emit SSE stream with the result
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Connection", "keep-alive");
     res.setHeader("X-Agent-Id", agentId);
     res.setHeader("X-Agent-Name", agentName);
-    res.setHeader("X-Request-Id", requestId);
 
     const msgId = `msg_${uuidv4().replace(/-/g, "").slice(0, 20)}`;
 
@@ -274,34 +317,25 @@ async function handleAgentSquad(
     emit("message_start", {
       type: "message_start",
       message: {
-        id: msgId,
-        type: "message",
-        role: "assistant",
-        content: [],
+        id: msgId, type: "message", role: "assistant", content: [],
         model: body.model || "claude-code-cli",
-        stop_reason: null,
-        stop_sequence: null,
+        stop_reason: null, stop_sequence: null,
         usage: { input_tokens: userInput.length, output_tokens: 0 },
       },
     });
-
     emit("content_block_start", { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } });
-    emit("ping", { type: "ping" });
     emit("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: outputText } });
     emit("content_block_stop", { type: "content_block_stop", index: 0 });
-
     emit("message_delta", {
       type: "message_delta",
       delta: { stop_reason: "end_turn", stop_sequence: null },
       usage: { output_tokens: outputText.split(" ").length },
     });
     emit("message_stop", { type: "message_stop" });
-
     res.end();
   } else {
     res.setHeader("X-Agent-Id", agentId);
     res.setHeader("X-Agent-Name", agentName);
-    res.setHeader("X-Request-Id", requestId);
     res.json({
       id: `msg_${uuidv4().replace(/-/g, "").slice(0, 20)}`,
       type: "message",

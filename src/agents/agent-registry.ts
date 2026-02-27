@@ -51,7 +51,7 @@ function parseSKILL(content: string): AgentDefinition | null {
 }
 
 /**
- * Load all active agent definitions from agents/*/SKILL.md
+ * Load all active agent definitions from agents/{name}/SKILL.md
  */
 export function loadAgentDefinitions(): AgentDefinition[] {
   if (!existsSync(AGENTS_DIR)) {

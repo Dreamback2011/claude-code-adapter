@@ -8,25 +8,72 @@ import type {
   CLIResultEvent,
   Message,
   SystemBlock,
+  TextBlock,
 } from "./types.js";
 
+// ── Result types ─────────────────────────────────────────────────────────────
+
+export interface NonStreamingResult {
+  response: AnthropicResponse;
+  cliSessionId?: string;
+}
+
+export interface StreamingResult {
+  streamedText: string;
+  cliSessionId?: string;
+}
+
+// ── Prompt extraction ────────────────────────────────────────────────────────
+
 /**
- * Extract the prompt text from the Anthropic messages array.
+ * Extract text from a single message.
  */
-function extractPrompt(messages: Message[]): string {
+function messageText(msg: Message): string {
+  if (typeof msg.content === "string") return msg.content;
+  return msg.content
+    .filter((b): b is TextBlock => b.type === "text")
+    .map((b) => b.text)
+    .join("\n");
+}
+
+/**
+ * Build the prompt to send to Claude CLI.
+ *
+ * - Resuming session (has cliSessionId): only send the latest user message,
+ *   because CLI already has the full conversation in its session.
+ * - New session with history (multiple messages): format full conversation
+ *   so Claude has context from the start.
+ * - New session, single message: just send it directly.
+ */
+function buildPrompt(messages: Message[], isResuming: boolean): string {
+  // Get the latest user message
+  let latestUserText = "";
   for (let i = messages.length - 1; i >= 0; i--) {
-    const msg = messages[i];
-    if (msg.role === "user") {
-      if (typeof msg.content === "string") {
-        return msg.content;
-      }
-      const textParts = msg.content
-        .filter((b): b is { type: "text"; text: string } => b.type === "text")
-        .map((b) => b.text);
-      return textParts.join("\n");
+    if (messages[i].role === "user") {
+      latestUserText = messageText(messages[i]);
+      break;
     }
   }
-  return "";
+
+  // Resuming: CLI has history, only send new message
+  if (isResuming) {
+    return latestUserText;
+  }
+
+  // Single message or only user messages: just send it
+  if (messages.length <= 1) {
+    return latestUserText;
+  }
+
+  // Multiple messages (new session with history): include full context
+  const historyParts: string[] = [];
+  for (let i = 0; i < messages.length - 1; i++) {
+    const msg = messages[i];
+    const role = msg.role === "user" ? "User" : "Assistant";
+    historyParts.push(`${role}: ${messageText(msg)}`);
+  }
+
+  return `[Previous conversation]\n${historyParts.join("\n\n")}\n\n[Current message]\n${latestUserText}`;
 }
 
 function extractSystemPrompt(system: string | SystemBlock[] | undefined): string | undefined {
@@ -35,45 +82,70 @@ function extractSystemPrompt(system: string | SystemBlock[] | undefined): string
   return system.map((b) => b.text).join("\n");
 }
 
-function buildCLIOptions(req: AnthropicRequest, allowedTools: string): CLIOptions {
+function buildCLIOptions(
+  req: AnthropicRequest,
+  allowedTools: string,
+  cliSessionId?: string
+): CLIOptions {
   return {
-    prompt: extractPrompt(req.messages),
+    prompt: buildPrompt(req.messages, !!cliSessionId),
     systemPrompt: extractSystemPrompt(req.system),
     allowedTools,
     model: req.model || undefined,
+    sessionId: cliSessionId,
   };
 }
 
 const MAX_RETRIES = 2;
 const RETRY_DELAY_MS = 1000;
 
+// ── Non-streaming ────────────────────────────────────────────────────────────
+
 /**
  * Handle a non-streaming request.
- * Internally uses streaming CLI, collects result, returns JSON response.
+ * Supports session resumption via cliSessionId.
+ * Returns the response + CLI session ID for session tracking.
  */
 export async function handleNonStreaming(
   req: AnthropicRequest,
-  allowedTools: string
-): Promise<AnthropicResponse> {
-  const cliOptions = buildCLIOptions(req, allowedTools);
+  allowedTools: string,
+  cliSessionId?: string
+): Promise<NonStreamingResult> {
+  const cliOptions = buildCLIOptions(req, allowedTools, cliSessionId);
   let lastError: Error | null = null;
+  let capturedSessionId: string | undefined;
 
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     if (attempt > 0) {
       console.log(`[adapter] handleNonStreaming - retry ${attempt}/${MAX_RETRIES}`);
       await new Promise((r) => setTimeout(r, RETRY_DELAY_MS * attempt));
+
+      // If first attempt with --resume failed, try without it (fresh session)
+      if (attempt === 1 && cliSessionId) {
+        console.log("[adapter] Retrying without --resume (session may have expired)");
+        cliOptions.sessionId = undefined;
+        cliOptions.prompt = buildPrompt(req.messages, false);
+      }
     }
 
-    console.log("[adapter] handleNonStreaming - starting CLI (attempt", attempt + 1, ")");
+    console.log(
+      "[adapter] handleNonStreaming - attempt",
+      attempt + 1,
+      cliOptions.sessionId ? `(resuming ${cliOptions.sessionId})` : "(new session)"
+    );
     let resultText = "";
 
     try {
       for await (const line of invokeClaudeCLI(cliOptions)) {
         if (line.type === "result") {
           const r = line as CLIResultEvent;
-          resultText = r.result || resultText;
+          capturedSessionId = r.session_id || capturedSessionId;
+          if (!resultText && r.result) {
+            resultText = r.result;
+          }
         } else if (line.type === "stream_event") {
           const se = line as CLIStreamEvent;
+          capturedSessionId = se.session_id || capturedSessionId;
           if (se.event?.type === "content_block_delta") {
             const delta = se.event.delta as any;
             if (delta?.type === "text_delta") {
@@ -83,17 +155,25 @@ export async function handleNonStreaming(
         }
       }
 
-      console.log("[adapter] handleNonStreaming - done, result length:", resultText.length);
+      console.log(
+        "[adapter] handleNonStreaming - done, length:",
+        resultText.length,
+        "session:",
+        capturedSessionId ?? "none"
+      );
 
       return {
-        id: `msg_${uuidv4().replace(/-/g, "").slice(0, 20)}`,
-        type: "message",
-        role: "assistant",
-        content: [{ type: "text", text: resultText || "(no response)" }],
-        model: req.model || "claude-sonnet-4-6",
-        stop_reason: "end_turn",
-        stop_sequence: null,
-        usage: { input_tokens: 0, output_tokens: 0 },
+        response: {
+          id: `msg_${uuidv4().replace(/-/g, "").slice(0, 20)}`,
+          type: "message",
+          role: "assistant",
+          content: [{ type: "text", text: resultText || "(no response)" }],
+          model: req.model || "claude-sonnet-4-6",
+          stop_reason: "end_turn",
+          stop_sequence: null,
+          usage: { input_tokens: 0, output_tokens: 0 },
+        },
+        cliSessionId: capturedSessionId,
       };
     } catch (err: any) {
       lastError = err;
@@ -104,17 +184,24 @@ export async function handleNonStreaming(
   throw lastError || new Error("All retry attempts failed");
 }
 
+// ── Streaming ────────────────────────────────────────────────────────────────
+
 /**
  * Handle a streaming request.
  * Forwards CLI stream events as Anthropic SSE.
+ * Supports session resumption and returns CLI session ID.
  */
 export async function handleStreaming(
   req: AnthropicRequest,
   res: Response,
-  allowedTools: string
-): Promise<string> {
-  console.log("[adapter] handleStreaming - starting CLI");
-  const cliOptions = buildCLIOptions(req, allowedTools);
+  allowedTools: string,
+  cliSessionId?: string
+): Promise<StreamingResult> {
+  const cliOptions = buildCLIOptions(req, allowedTools, cliSessionId);
+  console.log(
+    "[adapter] handleStreaming -",
+    cliOptions.sessionId ? `resuming ${cliOptions.sessionId}` : "new session"
+  );
 
   // SSE headers
   res.setHeader("Content-Type", "text/event-stream");
@@ -128,6 +215,7 @@ export async function handleStreaming(
   let contentBlockIndex = 0;
   let hasOpenBlock = false;
   let resultText = "";
+  let capturedSessionId: string | undefined;
 
   try {
     for await (const line of invokeClaudeCLI(cliOptions)) {
@@ -139,21 +227,13 @@ export async function handleStreaming(
       if (line.type === "stream_event") {
         const streamEvent = line as CLIStreamEvent;
         const event = streamEvent.event;
+        capturedSessionId = streamEvent.session_id || capturedSessionId;
 
         // Skip nested events from tool use
-        if (streamEvent.parent_tool_use_id) {
-          continue;
-        }
-
-        // Debug: log every event type from CLI
-        console.log("[cli-event]", event.type, "parent:", streamEvent.parent_tool_use_id ?? "none");
+        if (streamEvent.parent_tool_use_id) continue;
 
         if (event.type === "message_start") {
-          // Only send the FIRST message_start, skip all subsequent ones
-          if (sentMessageStart) {
-            console.log("[adapter] Skipping duplicate message_start");
-            continue;
-          }
+          if (sentMessageStart) continue;
           const msg = event.message || {};
           sendSSE(res, "message_start", {
             type: "message_start",
@@ -175,20 +255,14 @@ export async function handleStreaming(
           sentMessageStart = true;
         } else if (event.type === "content_block_start") {
           if (!sentMessageStart) continue;
-          // Only forward text blocks, skip tool_use blocks
-          if (event.content_block && (event.content_block as any).type === "tool_use") {
-            continue;
-          }
+          if (event.content_block && (event.content_block as any).type === "tool_use") continue;
           sendSSE(res, "content_block_start", event);
           hasOpenBlock = true;
           contentBlockIndex = (event.index ?? contentBlockIndex) + 1;
         } else if (event.type === "content_block_delta") {
           if (!sentMessageStart) continue;
-          // Only forward text deltas
           const deltaType = (event.delta as any)?.type;
-          if (deltaType && deltaType !== "text_delta") {
-            continue;
-          }
+          if (deltaType && deltaType !== "text_delta") continue;
           sendSSE(res, "content_block_delta", event);
           if (deltaType === "text_delta") {
             resultText += (event.delta as any).text || "";
@@ -198,20 +272,22 @@ export async function handleStreaming(
           sendSSE(res, "content_block_stop", event);
           hasOpenBlock = false;
         } else if (event.type === "message_delta") {
-          if (!sentMessageStart) continue;
-          // Don't forward message_delta from mid-stream, we send our own at the end
-          continue;
+          continue; // We send our own at the end
         } else if (event.type === "message_stop") {
-          // Don't forward message_stop from CLI — we send our own after result
-          console.log("[adapter] Skipping CLI message_stop (will send after result)");
-          continue;
+          continue; // We send our own after result
         } else if (event.type === "ping") {
           sendSSE(res, "ping", { type: "ping" });
         }
       } else if (line.type === "result") {
         const resultEvent = line as CLIResultEvent;
+        capturedSessionId = resultEvent.session_id || capturedSessionId;
         resultText = resultEvent.result || resultText;
-        console.log("[adapter] Got result, length:", resultText.length);
+        console.log(
+          "[adapter] Got result, length:",
+          resultText.length,
+          "session:",
+          capturedSessionId ?? "none"
+        );
 
         if (!sentMessageStart) {
           sendSyntheticStream(res, msgId, req.model || "claude-sonnet-4-6", resultText);
@@ -233,9 +309,15 @@ export async function handleStreaming(
     }
   } catch (err: any) {
     console.error("[adapter] Stream error:", err.message);
+
     if (!sentMessageStart) {
-      // Retry once if we haven't sent any data yet
-      console.log("[adapter] Attempting stream retry...");
+      // If resuming failed, retry as fresh session
+      if (cliSessionId) {
+        console.log("[adapter] Resume failed, retrying as fresh session...");
+        cliOptions.sessionId = undefined;
+        cliOptions.prompt = buildPrompt(req.messages, false);
+      }
+
       try {
         await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
         for await (const line of invokeClaudeCLI(cliOptions)) {
@@ -244,15 +326,20 @@ export async function handleStreaming(
           if (line.type === "stream_event") {
             const streamEvent = line as CLIStreamEvent;
             const event = streamEvent.event;
+            capturedSessionId = streamEvent.session_id || capturedSessionId;
             if (streamEvent.parent_tool_use_id) continue;
 
             if (event.type === "message_start" && !sentMessageStart) {
               sendSSE(res, "message_start", {
                 type: "message_start",
                 message: {
-                  id: msgId, type: "message", role: "assistant", content: [],
+                  id: msgId,
+                  type: "message",
+                  role: "assistant",
+                  content: [],
                   model: req.model || "claude-sonnet-4-6",
-                  stop_reason: null, stop_sequence: null,
+                  stop_reason: null,
+                  stop_sequence: null,
                   usage: { input_tokens: 0, output_tokens: 0 },
                 },
               });
@@ -265,34 +352,49 @@ export async function handleStreaming(
               const deltaType = (event.delta as any)?.type;
               if (deltaType && deltaType !== "text_delta") continue;
               sendSSE(res, "content_block_delta", event);
+              if (deltaType === "text_delta") {
+                resultText += (event.delta as any).text || "";
+              }
             } else if (event.type === "content_block_stop" && sentMessageStart && hasOpenBlock) {
               sendSSE(res, "content_block_stop", event);
               hasOpenBlock = false;
             }
           } else if (line.type === "result") {
             const resultEvent = line as CLIResultEvent;
+            capturedSessionId = resultEvent.session_id || capturedSessionId;
             resultText = resultEvent.result || resultText;
             if (!sentMessageStart) {
               sendSyntheticStream(res, msgId, req.model || "claude-sonnet-4-6", resultText);
               sentMessageStart = true;
             } else {
-              if (hasOpenBlock) sendSSE(res, "content_block_stop", { type: "content_block_stop", index: 0 });
-              sendSSE(res, "message_delta", { type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 0 } });
+              if (hasOpenBlock)
+                sendSSE(res, "content_block_stop", { type: "content_block_stop", index: 0 });
+              sendSSE(res, "message_delta", {
+                type: "message_delta",
+                delta: { stop_reason: "end_turn" },
+                usage: { output_tokens: 0 },
+              });
               sendSSE(res, "message_stop", { type: "message_stop" });
             }
           }
         }
       } catch (retryErr: any) {
         console.error("[adapter] Stream retry also failed:", retryErr.message);
-        sendSyntheticStream(res, msgId, req.model || "claude-sonnet-4-6", `Error: ${retryErr.message}`);
+        sendSyntheticStream(
+          res,
+          msgId,
+          req.model || "claude-sonnet-4-6",
+          `Error: ${retryErr.message}`
+        );
       }
     }
   }
 
-  console.log("[adapter] handleStreaming - done");
   res.end();
-  return resultText;
+  return { streamedText: resultText, cliSessionId: capturedSessionId };
 }
+
+// ── SSE helpers ──────────────────────────────────────────────────────────────
 
 function sendSyntheticStream(res: Response, msgId: string, model: string, text: string): void {
   sendSSE(res, "message_start", {
@@ -328,6 +430,5 @@ function sendSyntheticStream(res: Response, msgId: string, model: string, text: 
 }
 
 function sendSSE(res: Response, event: string, data: unknown): void {
-  console.log("[sse]", event);
   res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 }

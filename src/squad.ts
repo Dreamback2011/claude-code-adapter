@@ -4,7 +4,7 @@ import { CLIClassifier } from "./classifiers/cli-classifier.js";
 import { loadAgentDefinitions } from "./agents/agent-registry.js";
 
 /**
- * Creates an AgentSquad with agents dynamically loaded from agents/*/SKILL.md
+ * Creates an AgentSquad with agents dynamically loaded from agents/{id}/SKILL.md
  *
  * Categories:
  *   💼 work     — BD, crypto, Bitget Wallet, partnerships
