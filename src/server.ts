@@ -2,11 +2,25 @@ import express from "express";
 import { createAuthMiddleware } from "./auth.js";
 import { handleNonStreaming, handleStreaming } from "./adapter.js";
 import type { AnthropicRequest } from "./types.js";
+import type { AgentSquad } from "agent-squad";
+import { logMessage } from "./message-logger.js";
 
 export interface ServerConfig {
   port: number;
   apiKey: string;
   allowedTools: string;
+  useAgentSquad?: boolean;
+}
+
+// Lazily initialized AgentSquad — created once on first use if enabled
+let squadInstance: AgentSquad | null = null;
+
+async function getSquad(config: ServerConfig): Promise<AgentSquad> {
+  if (!squadInstance) {
+    const { createSquad } = await import("./squad.js");
+    squadInstance = createSquad(config.allowedTools);
+  }
+  return squadInstance;
 }
 
 export function createServer(config: ServerConfig) {
@@ -105,10 +119,16 @@ function messagesHandler(config: ServerConfig) {
     }
 
     try {
-      if (body.stream) {
-        await handleStreaming(body, res, config.allowedTools);
+      if (config.useAgentSquad) {
+        // Route through Agent Squad: classify intent → dispatch to specialist agent
+        await handleAgentSquad(body, res, config);
+      } else if (body.stream) {
+        const streamResult = await handleStreaming(body, res, config.allowedTools);
+        logMessage(msgText, streamResult);
       } else {
         const response = await handleNonStreaming(body, config.allowedTools);
+        const outText = response.content?.map((b: any) => b.text ?? "").join("") ?? "";
+        logMessage(msgText, outText, response.usage?.input_tokens, response.usage?.output_tokens);
         res.json(response);
       }
     } catch (err: any) {
@@ -124,4 +144,96 @@ function messagesHandler(config: ServerConfig) {
       }
     }
   };
+}
+
+/**
+ * Route a request through Agent Squad:
+ * 1. Classify intent → pick the best specialized agent
+ * 2. Agent processes the request via Claude Code CLI
+ * 3. Wrap result in Anthropic Messages API response format
+ */
+async function handleAgentSquad(
+  body: AnthropicRequest,
+  res: express.Response,
+  config: ServerConfig
+): Promise<void> {
+  const { v4: uuidv4 } = await import("uuid");
+
+  // Extract user input text
+  const lastMsg = body.messages[body.messages.length - 1];
+  const userInput = typeof lastMsg.content === "string"
+    ? lastMsg.content
+    : (lastMsg.content || []).filter((b: any) => b.type === "text").map((b: any) => b.text).join("");
+
+  // Use message ID as sessionId so the same conversation routes to the same agent context
+  const userId = "default";
+  const sessionId = body.metadata?.user_id ?? "session-default";
+
+  console.log(`[squad] Routing request for session=${sessionId}, input="${userInput.slice(0, 100)}..."`);
+
+  const squad = await getSquad(config);
+  const agentResponse = await squad.routeRequest(userInput, userId, sessionId);
+
+  const outputText = typeof agentResponse.output === "string"
+    ? agentResponse.output
+    : agentResponse.output instanceof Object && "getAccumulatedData" in (agentResponse.output as any)
+      ? (agentResponse.output as any).getAccumulatedData()
+      : String(agentResponse.output);
+
+  console.log(`[squad] Response from agent=${agentResponse.metadata.agentName}, length=${outputText.length}`);
+
+  if (body.stream) {
+    // Emit SSE stream with the result
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "keep-alive");
+
+    const msgId = `msg_${uuidv4().replace(/-/g, "").slice(0, 20)}`;
+
+    const emit = (event: string, data: object) => {
+      res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    };
+
+    emit("message_start", {
+      type: "message_start",
+      message: {
+        id: msgId,
+        type: "message",
+        role: "assistant",
+        content: [],
+        model: body.model || "claude-code-cli",
+        stop_reason: null,
+        stop_sequence: null,
+        usage: { input_tokens: userInput.length, output_tokens: 0 },
+      },
+    });
+
+    emit("content_block_start", { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } });
+    emit("ping", { type: "ping" });
+    emit("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: outputText } });
+    emit("content_block_stop", { type: "content_block_stop", index: 0 });
+
+    emit("message_delta", {
+      type: "message_delta",
+      delta: { stop_reason: "end_turn", stop_sequence: null },
+      usage: { output_tokens: outputText.split(" ").length },
+    });
+    emit("message_stop", { type: "message_stop" });
+
+    res.end();
+  } else {
+    res.json({
+      id: `msg_${uuidv4().replace(/-/g, "").slice(0, 20)}`,
+      type: "message",
+      role: "assistant",
+      content: [{ type: "text", text: outputText }],
+      model: body.model || "claude-code-cli",
+      stop_reason: "end_turn",
+      stop_sequence: null,
+      usage: {
+        input_tokens: userInput.length,
+        output_tokens: outputText.split(" ").length,
+      },
+    });
+  }
 }

@@ -112,7 +112,7 @@ export async function handleStreaming(
   req: AnthropicRequest,
   res: Response,
   allowedTools: string
-): Promise<void> {
+): Promise<string> {
   console.log("[adapter] handleStreaming - starting CLI");
   const cliOptions = buildCLIOptions(req, allowedTools);
 
@@ -291,6 +291,7 @@ export async function handleStreaming(
 
   console.log("[adapter] handleStreaming - done");
   res.end();
+  return resultText;
 }
 
 function sendSyntheticStream(res: Response, msgId: string, model: string, text: string): void {
