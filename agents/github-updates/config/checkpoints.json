@@ -1,4 +1,46 @@
 {
-  "checkpoints": [],
-  "lastId": 0
+  "checkpoints": [
+    {
+      "id": "cp-001",
+      "timestamp": "2026-03-01T20:58:58.124Z",
+      "commit": "6f2ccae",
+      "branch": "main",
+      "summary": "auto-checkpoint: 30 file(s) in agents, package-lock.json, package.json, src, tsconfig.json",
+      "filesChanged": [
+        "agents/evaluator/learning.json",
+        "agents/general/learning.json",
+        "agents/github-updates/checkpoint.ts",
+        "agents/github-updates/learning.json",
+        "agents/github-updates/rollback.ts",
+        "agents/github-updates/self-repair.ts",
+        "agents/life/learning.json",
+        "agents/openclaw/learning.json",
+        "agents/research/SKILL.md",
+        "agents/research/digests/2026-03-01.md",
+        "agents/research/learning.json",
+        "agents/research/reports/daily-2026-03-01.md",
+        "agents/research/reports/daily-zh-2026-03-01.md",
+        "agents/research/reports/raw-2026-03-01.json",
+        "agents/research/rss-aggregator.js",
+        "agents/research/rss-config.json",
+        "agents/research/rss-daily.ts",
+        "agents/research/rss-summarize.ts",
+        "agents/telegram/learning.json",
+        "agents/x-timeline/learning.json",
+        "package-lock.json",
+        "package.json",
+        "src/agents/agent-registry.ts",
+        "src/classifiers/cli-classifier.ts",
+        "src/cron-scheduler.ts",
+        "src/heartbeat.ts",
+        "src/index.ts",
+        "src/server.ts",
+        "src/squad.ts",
+        "tsconfig.json"
+      ],
+      "health": "pass",
+      "rollbackSafe": true
+    }
+  ],
+  "lastId": 1
 }
