@@ -261,7 +261,20 @@
       ],
       "health": "pass",
       "rollbackSafe": true
+    },
+    {
+      "id": "cp-016",
+      "timestamp": "2026-03-01T22:13:24.633Z",
+      "commit": "f238442",
+      "branch": "main",
+      "summary": "auto-checkpoint: 2 file(s) in agents",
+      "filesChanged": [
+        "agents/github-updates/learning.json",
+        "agents/openclaw/learning.json"
+      ],
+      "health": "pass",
+      "rollbackSafe": true
     }
   ],
-  "lastId": 15
+  "lastId": 16
 }
