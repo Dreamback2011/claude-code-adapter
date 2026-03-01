@@ -9,6 +9,7 @@ import { loadAgentDefinitions } from "./agents/agent-registry.js";
  * Categories:
  *   💼 work     — BD, crypto, Bitget Wallet, partnerships
  *   📡 signal   — Price signals, alpha, regulatory risk
+ *   🔬 research — 投研分析、美股、Crypto、宏观、时事
  *   🌱 life     — Health, lifestyle, travel, personal development
  *   🤖 openclaw — AI tools, Claude, automation, development
  *   📎 general  — Default fallback (everything else)

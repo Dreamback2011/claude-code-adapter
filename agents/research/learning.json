@@ -1,10 +1,10 @@
 {
-  "agentId": "evaluator",
-  "totalUses": 6,
+  "agentId": "research",
+  "totalUses": 0,
   "goodRatings": 0,
   "badRatings": 0,
   "qualityScore": 1,
-  "lastUsed": "2026-03-01T19:37:53.062Z",
+  "lastUsed": null,
   "lastRated": null,
   "goodSamples": [],
   "archived": false

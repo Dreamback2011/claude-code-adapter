@@ -24,6 +24,60 @@ function exec(cmd: string): string {
 }
 
 /**
+ * Push current state to GitHub after any repair action.
+ */
+function pushToRemote(): void {
+  try {
+    const branch = exec("git branch --show-current");
+    if (!branch.startsWith("ERROR:")) {
+      exec(`git push origin ${branch}`);
+      console.log(`[SelfRepair] Pushed repair result to origin/${branch}`);
+    }
+  } catch (e: any) {
+    console.warn(`[SelfRepair] Push failed: ${e.message}`);
+  }
+}
+
+/**
+ * Kill stuck claude CLI processes that have been running too long.
+ * Returns number of processes killed.
+ */
+export function killStuckProcesses(maxAgeMinutes = 30): number {
+  // Find claude CLI processes older than maxAgeMinutes
+  const result = exec(`ps aux | grep '[c]laude.*-p' | awk '{print $2, $10}'`);
+  if (result.startsWith("ERROR:") || !result) return 0;
+
+  let killed = 0;
+  const lines = result.split("\n").filter(Boolean);
+  for (const line of lines) {
+    const [pid] = line.split(/\s+/);
+    if (!pid) continue;
+
+    // Check process elapsed time
+    const elapsed = exec(`ps -o etime= -p ${pid}`);
+    if (elapsed.startsWith("ERROR:")) continue;
+
+    // Parse elapsed time (formats: MM:SS, HH:MM:SS, D-HH:MM:SS)
+    const parts = elapsed.trim().replace(/-/g, ":").split(":");
+    let totalMinutes = 0;
+    if (parts.length >= 2) {
+      const nums = parts.map(Number);
+      if (parts.length === 2) totalMinutes = nums[0];
+      else if (parts.length === 3) totalMinutes = nums[0] * 60 + nums[1];
+      else totalMinutes = nums[0] * 24 * 60 + nums[1] * 60 + nums[2];
+    }
+
+    if (totalMinutes >= maxAgeMinutes) {
+      console.log(`[SelfRepair] Killing stuck claude process PID=${pid} (running ${totalMinutes}min)`);
+      exec(`kill -9 ${pid}`);
+      killed++;
+    }
+  }
+
+  return killed;
+}
+
+/**
  * Known error patterns → fix actions
  */
 const KNOWN_PATTERNS: Array<{
@@ -73,6 +127,15 @@ const KNOWN_PATTERNS: Array<{
         }
       }
       return false;
+    },
+  },
+  {
+    pattern: /timeout|TimeoutError|AbortError|stuck.*process/i,
+    name: "stuck-processes",
+    fix: () => {
+      const killed = killStuckProcesses(30);
+      console.log(`[SelfRepair] Killed ${killed} stuck processes`);
+      return killed > 0;
     },
   },
 ];
@@ -204,10 +267,42 @@ function tryRollback(diagnostic: DiagnosticReport): RepairResult {
 }
 
 /**
+ * Targeted repair for stuck agent processes.
+ * Called by heartbeat when individual agents timeout (doesn't need full pipeline).
+ */
+export function repairStuckAgents(timeoutAgentIds: string[]): RepairResult {
+  console.log(`[SelfRepair] Repairing stuck agents: ${timeoutAgentIds.join(", ")}`);
+
+  const killed = killStuckProcesses(15); // Lower threshold for targeted repair
+
+  if (killed > 0) {
+    return {
+      level: 2,
+      success: true,
+      action: `killed ${killed} stuck CLI process(es)`,
+      details: `Cleaned up ${killed} stuck processes for agents: ${timeoutAgentIds.join(", ")}`,
+    };
+  }
+
+  return {
+    level: 2,
+    success: false,
+    action: "no stuck processes found",
+    details: `Agents ${timeoutAgentIds.join(", ")} timed out but no stuck processes detected`,
+  };
+}
+
+/**
  * Full repair pipeline — escalate through all levels
  */
 export function repair(): RepairResult {
   console.log("[SelfRepair] Starting repair pipeline...");
+
+  // Level 0: Always clean up stuck processes first
+  const killed = killStuckProcesses(30);
+  if (killed > 0) {
+    console.log(`[SelfRepair] Pre-cleanup: killed ${killed} stuck processes`);
+  }
 
   // Level 1: Diagnose
   const diagnostic = diagnose();
@@ -218,16 +313,19 @@ export function repair(): RepairResult {
       level: 1,
       success: true,
       action: "diagnose",
-      details: `System health is ${diagnostic.health.overall} — no repair needed`,
+      details: `System health is ${diagnostic.health.overall} — no repair needed${killed > 0 ? ` (cleaned ${killed} stuck processes)` : ""}`,
       diagnostic,
     };
   }
 
   // Level 2: Auto-fix
   const autoFixResult = tryAutoFix(diagnostic);
-  if (autoFixResult.success) return autoFixResult;
+  if (autoFixResult.success) {
+    pushToRemote();
+    return autoFixResult;
+  }
 
-  // Level 3: Rollback
+  // Level 3: Rollback (rollbackTo already pushes)
   const rollbackResult = tryRollback(diagnostic);
   if (rollbackResult.success) return rollbackResult;
 

@@ -21,7 +21,7 @@ import "dotenv/config";
 import { createServer } from "./server.js";
 import { pruneOldMessages } from "./message-logger.js";
 import { getMemoryStats, reloadIndex, searchMemories, preloadModel, qmdFullSync } from "./memory/index.js";
-import { setupEvaluationCron } from "./agent-evaluation.js";
+import { setupCronScheduler } from "./cron-scheduler.js";
 
 const useAgentSquad = process.env.USE_AGENT_SQUAD === "true";
 
@@ -46,7 +46,7 @@ app.listen(config.port, () => {
 │  Auth:     ${(config.apiKey ? "enabled" : "disabled").padEnd(33)}│
 │  Tools:    ${config.allowedTools.padEnd(33)}│
 │  AgentSquad: ${(useAgentSquad ? "ENABLED" : "disabled").padEnd(31)}│
-│  X-Timeline: ${"ACTIVE (every 1h)".padEnd(31)}│
+│  Cron:      ${"eval@23:00 + x-tl@1h + hb@13m".padEnd(33)}│
 │  Semantic:  ${"QMD vsearch".padEnd(33)}│
 ├─────────────────────────────────────────────┤
 │  OpenClaw Config:                           │
@@ -70,7 +70,6 @@ app.listen(config.port, () => {
     }
   });
 
-  // Start daily agent evaluation cron (runs at 23:00 local time)
-  setupEvaluationCron();
-  console.log('[Evaluation] Cron job initialized');
+  // Start cron scheduler (evaluation@23:00 + x-timeline@1h + heartbeat@13min)
+  setupCronScheduler();
 });

@@ -81,6 +81,15 @@ export function rollbackTo(targetId?: string): RollbackResult {
   const healthAfter = runHealthCheck();
   const newCommit = exec("git rev-parse --short HEAD");
 
+  // Auto-push rollback to GitHub
+  const branch = exec("git branch --show-current");
+  try {
+    exec(`git push origin ${branch}`);
+    console.log(`[Rollback] Pushed rollback to origin/${branch}`);
+  } catch (pushErr: any) {
+    console.warn(`[Rollback] Push failed (rollback is local only): ${pushErr.message}`);
+  }
+
   return {
     success: healthAfter.overall === "pass",
     fromCommit: currentCommit,
@@ -129,6 +138,15 @@ export function rollbackFiles(files: string[], targetId?: string): {
   if (restoredFiles.length > 0) {
     exec("git add -A");
     exec(`git commit -m "rollback: restore ${restoredFiles.length} file(s) from ${target.id}"`);
+
+    // Auto-push selective rollback
+    const branch = exec("git branch --show-current");
+    try {
+      exec(`git push origin ${branch}`);
+      console.log(`[Rollback] Pushed selective rollback to origin/${branch}`);
+    } catch (pushErr: any) {
+      console.warn(`[Rollback] Push failed: ${pushErr.message}`);
+    }
   }
 
   return {

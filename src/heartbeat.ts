@@ -1,0 +1,308 @@
+/**
+ * Heartbeat — Agent Health Check System
+ *
+ * Every 13 minutes (via CronScheduler), triggers each interactive agent
+ * to perform a self-check by sending a real request through the adapter.
+ *
+ * This is NOT passive metrics reading — each agent independently processes
+ * a health check prompt through the full pipeline (adapter → CLI → Agent).
+ *
+ * If an agent is busy, the request queues behind (concurrency control handles this).
+ *
+ * Exports:
+ *   runHeartbeat()       — execute one health check cycle (called by CronScheduler)
+ *   getHeartbeatStatus() — latest health check results (for /v1/heartbeat endpoint)
+ */
+
+import { readdirSync, existsSync, readFileSync } from "fs";
+import { join, dirname } from "path";
+import { fileURLToPath } from "url";
+import { sendToChannel } from "./webhook-config.js";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const AGENTS_DIR = join(__dirname, "../agents");
+
+// ─── Config ──────────────────────────────────────────────────────────────────
+
+/** Timeout per agent health check (90 seconds) */
+const AGENT_CHECK_TIMEOUT_MS = 90_000;
+
+/** Agents excluded from heartbeat (cron-only / non-interactive) */
+const EXCLUDED_AGENTS = ["x-timeline", "evaluator"];
+
+// ─── Types ───────────────────────────────────────────────────────────────────
+
+export interface AgentCheckResult {
+  agentId: string;
+  status: "ok" | "timeout" | "error";
+  responseTimeMs: number;
+  /** Truncated agent response (first 500 chars) */
+  responsePreview: string | null;
+  error: string | null;
+}
+
+export interface HeartbeatStatus {
+  timestamp: string;
+  durationMs: number;
+  results: AgentCheckResult[];
+  summary: { ok: number; timeout: number; error: number; total: number };
+}
+
+// ─── State ───────────────────────────────────────────────────────────────────
+
+let latestStatus: HeartbeatStatus | null = null;
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+/**
+ * Get list of interactive agent IDs to check.
+ * Reads agents/ directory, excludes cron-only and archived agents.
+ */
+function getInteractiveAgentIds(): string[] {
+  if (!existsSync(AGENTS_DIR)) return [];
+
+  const ids: string[] = [];
+  for (const entry of readdirSync(AGENTS_DIR, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    if (entry.name === "archive") continue;
+    if (EXCLUDED_AGENTS.includes(entry.name)) continue;
+
+    const skillPath = join(AGENTS_DIR, entry.name, "SKILL.md");
+    if (!existsSync(skillPath)) continue;
+
+    // Check if agent is scheduled type (skip it)
+    try {
+      const content = readFileSync(skillPath, "utf-8");
+      if (/^type:\s*"?scheduled"?/m.test(content)) continue;
+      if (/^status:\s*"?archived"?/m.test(content)) continue;
+    } catch {
+      continue;
+    }
+
+    ids.push(entry.name);
+  }
+  return ids;
+}
+
+/**
+ * Send a health check request to a specific agent via the adapter.
+ * Uses metadata.agent_id for force-routing (bypasses classifier).
+ */
+async function checkAgent(agentId: string): Promise<AgentCheckResult> {
+  const port = process.env.PORT || "3456";
+  const apiKey = process.env.LOCAL_API_KEY || "";
+  const startTime = Date.now();
+
+  const body = {
+    model: "claude-haiku-4-5-20251001",
+    max_tokens: 500,
+    metadata: {
+      agent_id: agentId,
+      heartbeat: true,
+    },
+    system: "You are performing an automated health check. Respond briefly in Chinese. Keep it under 100 words.",
+    messages: [
+      {
+        role: "user",
+        content: `[Heartbeat 自检] 这是定时健康检查。请简要确认：
+1. 你正常运行
+2. 你的核心能力可用
+3. 如果你发现任何异常请报告
+
+简短回复即可。`,
+      },
+    ],
+  };
+
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/v1/messages`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": apiKey,
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(AGENT_CHECK_TIMEOUT_MS),
+    });
+
+    const responseTimeMs = Date.now() - startTime;
+
+    if (!response.ok) {
+      const errText = await response.text().catch(() => "");
+      return {
+        agentId,
+        status: "error",
+        responseTimeMs,
+        responsePreview: null,
+        error: `HTTP ${response.status}: ${errText.slice(0, 200)}`,
+      };
+    }
+
+    const result = (await response.json()) as any;
+
+    // Extract text from Anthropic-format response
+    const text = (result.content || [])
+      .filter((b: any) => b.type === "text")
+      .map((b: any) => b.text)
+      .join("");
+
+    return {
+      agentId,
+      status: "ok",
+      responseTimeMs,
+      responsePreview: text.slice(0, 500) || null,
+      error: null,
+    };
+  } catch (err: any) {
+    const responseTimeMs = Date.now() - startTime;
+    const isTimeout = err.name === "TimeoutError" || err.name === "AbortError";
+
+    return {
+      agentId,
+      status: isTimeout ? "timeout" : "error",
+      responseTimeMs,
+      responsePreview: null,
+      error: err.message,
+    };
+  }
+}
+
+// ─── Discord Alert ───────────────────────────────────────────────────────────
+
+async function sendHeartbeatAlert(status: HeartbeatStatus): Promise<void> {
+  const failures = status.results.filter((r) => r.status !== "ok");
+  if (failures.length === 0) return;
+
+  const lines = [
+    `⚠️ **Heartbeat Alert** (${new Date(status.timestamp).toLocaleTimeString("zh-CN", { hour12: false })})`,
+    "",
+  ];
+
+  for (const f of failures) {
+    const emoji = f.status === "timeout" ? "⏰" : "🔴";
+    lines.push(`${emoji} **${f.agentId}**: ${f.status} — ${f.error || "unknown"} (${(f.responseTimeMs / 1000).toFixed(1)}s)`);
+  }
+
+  const okCount = status.results.filter((r) => r.status === "ok").length;
+  lines.push("", `✅ ${okCount}/${status.summary.total} agents healthy`);
+
+  try {
+    await sendToChannel("debug", lines.join("\n"), "Heartbeat");
+    console.log("[heartbeat] Discord alert sent");
+  } catch (err: any) {
+    console.error("[heartbeat] Discord alert failed:", err.message);
+  }
+}
+
+// ─── Core ────────────────────────────────────────────────────────────────────
+
+/**
+ * Run one heartbeat cycle: check all interactive agents sequentially.
+ * Called by CronScheduler every 13 minutes.
+ */
+export async function runHeartbeat(): Promise<void> {
+  const startTime = Date.now();
+  const agentIds = getInteractiveAgentIds();
+
+  if (agentIds.length === 0) {
+    console.log("[heartbeat] No interactive agents found, skipping");
+    return;
+  }
+
+  console.log(`[heartbeat] Starting health check for ${agentIds.length} agents: ${agentIds.join(", ")}`);
+
+  const results: AgentCheckResult[] = [];
+
+  // Check agents sequentially to avoid overwhelming the adapter
+  for (const agentId of agentIds) {
+    console.log(`[heartbeat] Checking ${agentId}...`);
+    const result = await checkAgent(agentId);
+
+    const emoji = result.status === "ok" ? "🟢" : result.status === "timeout" ? "🟡" : "🔴";
+    console.log(`[heartbeat] ${emoji} ${agentId}: ${result.status} (${(result.responseTimeMs / 1000).toFixed(1)}s)`);
+
+    results.push(result);
+  }
+
+  // Build summary
+  const summary = {
+    ok: results.filter((r) => r.status === "ok").length,
+    timeout: results.filter((r) => r.status === "timeout").length,
+    error: results.filter((r) => r.status === "error").length,
+    total: results.length,
+  };
+
+  const durationMs = Date.now() - startTime;
+
+  const status: HeartbeatStatus = {
+    timestamp: new Date().toISOString(),
+    durationMs,
+    results,
+    summary,
+  };
+
+  latestStatus = status;
+
+  console.log(
+    `[heartbeat] Complete: ${summary.ok}🟢 ${summary.timeout}🟡 ${summary.error}🔴 (${(durationMs / 1000).toFixed(1)}s total)`
+  );
+
+  // Alert on failures
+  if (summary.timeout > 0 || summary.error > 0) {
+    await sendHeartbeatAlert(status);
+
+    // ─── Targeted repair: kill stuck processes for timed-out agents ───
+    const timedOutAgents = results.filter((r) => r.status === "timeout").map((r) => r.agentId);
+    if (timedOutAgents.length > 0) {
+      console.log(`[heartbeat] ${timedOutAgents.length} agent(s) timed out — cleaning stuck processes...`);
+      try {
+        const { repairStuckAgents } = await import("../agents/github-updates/self-repair.js");
+        const stuckResult = repairStuckAgents(timedOutAgents);
+        console.log(`[heartbeat] Stuck process repair: ${stuckResult.action}`);
+
+        await sendToChannel("debug", [
+          `🔧 **卡顿进程清理** — ${timedOutAgents.join(", ")}`,
+          `Action: ${stuckResult.action}`,
+          `Result: ${stuckResult.success ? "✅ 已清理" : "⚠️ 未发现可清理进程"}`,
+        ].join("\n"), "SelfRepair").catch(() => {});
+      } catch (stuckErr: any) {
+        console.error(`[heartbeat] Stuck process repair failed:`, stuckErr.message);
+      }
+    }
+
+    // ─── Full self-repair: if ≥30% agents are failing (lowered from 50%) ───
+    const failRatio = (summary.timeout + summary.error) / summary.total;
+    if (failRatio >= 0.3) {
+      console.log(`[heartbeat] ${Math.round(failRatio * 100)}% agents unhealthy — triggering full self-repair...`);
+      try {
+        const { repair } = await import("../agents/github-updates/self-repair.js");
+        const repairResult = repair();
+        console.log(`[heartbeat] Self-repair result: level=${repairResult.level}, success=${repairResult.success}, action=${repairResult.action}`);
+
+        // Notify Discord about repair attempt
+        const repairLines = [
+          `🔧 **Self-Repair 自动触发** (${Math.round(failRatio * 100)}% agents 异常)`,
+          "",
+          `Level: ${repairResult.level}`,
+          `Action: ${repairResult.action}`,
+          `Result: ${repairResult.success ? "✅ 修复成功" : "❌ 修复失败"}`,
+          `Detail: ${repairResult.details.slice(0, 200)}`,
+        ];
+        await sendToChannel("debug", repairLines.join("\n"), "SelfRepair");
+      } catch (repairErr: any) {
+        console.error(`[heartbeat] Self-repair failed:`, repairErr.message);
+        await sendToChannel("debug", `🔧 Self-Repair 异常: ${repairErr.message}`, "SelfRepair").catch(() => {});
+      }
+    }
+  }
+}
+
+// ─── Public API ──────────────────────────────────────────────────────────────
+
+/**
+ * Get the most recent heartbeat status.
+ * Returns null if heartbeat hasn't run yet.
+ */
+export function getHeartbeatStatus(): HeartbeatStatus | null {
+  return latestStatus;
+}

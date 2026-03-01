@@ -69,7 +69,7 @@ export function createCheckpoint(
     push?: boolean;        // push to remote after commit
   } = {}
 ): Checkpoint {
-  const { files, commitType = "feat", push = false } = options;
+  const { files, commitType = "feat", push = true } = options;
 
   // Stage files
   if (files && files.length > 0) {

@@ -38,6 +38,7 @@ export interface AgentDefinition {
   category: string;
   description: string;
   status: "active" | "archived";
+  type: "interactive" | "scheduled";
   systemPrompt: string;
 }
 
@@ -76,6 +77,7 @@ function parseSKILL(content: string): AgentDefinition | null {
     category: meta.category ?? meta.id,
     description: meta.description ?? "",
     status: (meta.status as "active" | "archived") ?? "active",
+    type: meta.type === "scheduled" ? "scheduled" : "interactive",
     systemPrompt: fullSystemPrompt,
   };
 }
@@ -101,8 +103,12 @@ export function loadAgentDefinitions(): AgentDefinition[] {
       const content = readFileSync(skillPath, "utf-8");
       const def = parseSKILL(content);
       if (def && def.status === "active") {
-        defs.push(def);
-        console.log(`[AgentRegistry] Loaded: ${def.emoji} ${def.name} (${def.id})`);
+        if (def.type === "scheduled") {
+          console.log(`[AgentRegistry] Skipped (cron-only): ${def.emoji} ${def.name} (${def.id})`);
+        } else {
+          defs.push(def);
+          console.log(`[AgentRegistry] Loaded: ${def.emoji} ${def.name} (${def.id})`);
+        }
       }
     } catch (err: any) {
       console.warn(`[AgentRegistry] Failed to parse ${skillPath}:`, err.message);

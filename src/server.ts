@@ -11,7 +11,10 @@ import { runTaskAsync } from "./task-runner.js";
 import { recordMetric, normalizeAgentId } from "./agent-metrics.js";
 import { sendToChannel, resolveChannelName, DISCORD_CHANNELS, type ChannelName } from "./webhook-config.js";
 import { rateRequest, reportExecution, searchMemories, createMemory, getMemory, updateMemory, deleteMemory, getSystemStatus } from "./memory/index.js";
+import { getHeartbeatStatus } from "./heartbeat.js";
+import { getStatus as getCronStatus, triggerTask } from "./cron-scheduler.js";
 import { isEmptyResponse, extractOutput } from "./utils.js";
+import type { CLIClassifier } from "./classifiers/cli-classifier.js";
 
 export interface ServerConfig {
   port: number;
@@ -117,6 +120,36 @@ export function createServer(config: ServerConfig) {
   // Session monitoring endpoint
   app.get("/v1/sessions", createAuthMiddleware(config.apiKey), (_req, res) => {
     res.json(sessions.stats());
+  });
+
+  // Heartbeat status endpoint
+  app.get("/v1/heartbeat", createAuthMiddleware(config.apiKey), (_req, res) => {
+    const status = getHeartbeatStatus();
+    if (!status) {
+      res.json({ message: "Heartbeat not yet run (first check in ~13 min)" });
+      return;
+    }
+    res.json(status);
+  });
+
+  // Cron scheduler status
+  app.get("/v1/cron/status", createAuthMiddleware(config.apiKey), (_req, res) => {
+    res.json({ tasks: getCronStatus() });
+  });
+
+  // Manual cron trigger
+  app.post("/v1/cron/trigger/:taskName", createAuthMiddleware(config.apiKey), async (req, res) => {
+    const taskName = req.params.taskName as string;
+    const result = await triggerTask(taskName);
+    if (!result.found) {
+      res.status(404).json({ error: result.error });
+      return;
+    }
+    if (result.error) {
+      res.status(500).json({ triggered: true, error: result.error });
+      return;
+    }
+    res.json({ triggered: true, task: taskName });
   });
 
   const modelInfo = {
@@ -504,11 +537,28 @@ async function handleAgentSquad(
   const sessionId = externalSessionId;
   const requestId = uuidv4();
 
-  console.log(`[squad] Routing: session=${sessionId}, requestId=${requestId}, resume=${cliSessionId ?? "none"}`);
+  // Force-routing: metadata.agent_id bypasses classifier (used by heartbeat, manual triggers)
+  const forceAgentId = body.metadata?.agent_id as string | undefined;
+  console.log(`[squad] Routing: session=${sessionId}, requestId=${requestId}, resume=${cliSessionId ?? "none"}${forceAgentId ? `, force=${forceAgentId}` : ""}`);
 
   const squad = await getSquad(config);
   const startTime = Date.now();
-  let agentResponse = await squad.routeRequest(userInput, userId, sessionId);
+  let agentResponse;
+
+  if (forceAgentId) {
+    const classifier = squad.classifier as CLIClassifier;
+    const targetAgent = classifier.getAgent(forceAgentId);
+    if (!targetAgent) {
+      throw new Error(`Force-routed agent "${forceAgentId}" not found in registry`);
+    }
+    agentResponse = await squad.agentProcessRequest(
+      userInput, userId, sessionId,
+      { selectedAgent: targetAgent, confidence: 1.0 }
+    );
+  } else {
+    agentResponse = await squad.routeRequest(userInput, userId, sessionId);
+  }
+
   const latencyMs = Date.now() - startTime;
 
   let rawOutput = extractOutput(agentResponse.output);

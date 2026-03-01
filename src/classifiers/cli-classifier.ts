@@ -124,6 +124,14 @@ Respond ONLY with valid XML in exactly this format, nothing else:
     }
   }
 
+  /**
+   * Public accessor for force-routing (e.g., heartbeat checks).
+   * Wraps the protected getAgentById from base Classifier.
+   */
+  getAgent(agentId: string) {
+    return this.getAgentById(agentId);
+  }
+
   private getFallback(): ClassifierResult {
     // Fall back to first registered agent or null
     const agents = Object.values(this.agents ?? {});
