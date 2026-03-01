@@ -65,21 +65,27 @@ function getInteractiveAgentIds(): string[] {
   for (const entry of readdirSync(AGENTS_DIR, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;
     if (entry.name === "archive") continue;
-    if (EXCLUDED_AGENTS.includes(entry.name)) continue;
 
     const skillPath = join(AGENTS_DIR, entry.name, "SKILL.md");
     if (!existsSync(skillPath)) continue;
 
-    // Check if agent is scheduled type (skip it)
+    // Parse SKILL.md frontmatter for id, type, status
     try {
       const content = readFileSync(skillPath, "utf-8");
       if (/^type:\s*"?scheduled"?/m.test(content)) continue;
       if (/^status:\s*"?archived"?/m.test(content)) continue;
+
+      // Use the id field from SKILL.md (must match agent-registry registration)
+      const idMatch = content.match(/^id:\s*"?([^"\n]+)"?/m);
+      const agentId = idMatch ? idMatch[1].trim() : entry.name;
+
+      // Exclude by both directory name and resolved agent id
+      if (EXCLUDED_AGENTS.includes(entry.name) || EXCLUDED_AGENTS.includes(agentId)) continue;
+
+      ids.push(agentId);
     } catch {
       continue;
     }
-
-    ids.push(entry.name);
   }
   return ids;
 }
