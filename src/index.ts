@@ -20,7 +20,7 @@ process.on("uncaughtException", (err: NodeJS.ErrnoException) => {
 import "dotenv/config";
 import { createServer } from "./server.js";
 import { pruneOldMessages } from "./message-logger.js";
-import { getMemoryStats, reloadIndex } from "./memory/index.js";
+import { getMemoryStats, reloadIndex, searchMemories, preloadModel, qmdFullSync } from "./memory/index.js";
 import { setupEvaluationCron } from "./agent-evaluation.js";
 
 const useAgentSquad = process.env.USE_AGENT_SQUAD === "true";
@@ -47,7 +47,7 @@ app.listen(config.port, () => {
 │  Tools:    ${config.allowedTools.padEnd(33)}│
 │  AgentSquad: ${(useAgentSquad ? "ENABLED" : "disabled").padEnd(31)}│
 │  X-Timeline: ${"ACTIVE (every 1h)".padEnd(31)}│
-│  Embedding: ${"disabled".padEnd(33)}│
+│  Semantic:  ${"QMD vsearch".padEnd(33)}│
 ├─────────────────────────────────────────────┤
 │  OpenClaw Config:                           │
 │  Base URL: http://127.0.0.1:${String(config.port).padEnd(15)}│
@@ -59,6 +59,16 @@ app.listen(config.port, () => {
   reloadIndex();
   const memStats = getMemoryStats();
   console.log(`[memory] Index pre-loaded: ${memStats.total} items (${Object.entries(memStats.byCategory).map(([k,v]) => `${k}:${v}`).join(', ')})`);
+
+  // Initialize QMD semantic search + full sync
+  preloadModel().then(() => {
+    const allItems = searchMemories({ limit: 9999 });
+    if (allItems.length > 0) {
+      qmdFullSync(allItems).then(() => {
+        console.log(`[QMD] Full sync complete: ${allItems.length} items indexed`);
+      });
+    }
+  });
 
   // Start daily agent evaluation cron (runs at 23:00 local time)
   setupEvaluationCron();

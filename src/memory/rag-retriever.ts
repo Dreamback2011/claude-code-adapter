@@ -11,8 +11,9 @@
  *   keyword_only: 0.70 * keyword  + 0.30 * recency (embedding 不可用时)
  */
 
-import { searchMemories } from "./memory-store.js";
-import { semanticSearch, isModelLoaded } from "./embeddings.js";
+import { searchMemories, getMemory } from "./memory-store.js";
+import { isModelLoaded } from "./embeddings.js";
+import { qmdVsearch } from "./qmd-search.js";
 import type { MemoryItem, MemoryCategory } from "./types.js";
 import { PermissionTier } from "./types.js";
 
@@ -182,28 +183,25 @@ export async function ragQuery(query: RAGQuery): Promise<RAGResult> {
     );
   }
 
-  // ── 2. 语义搜索（如果可用）────────────────────────────────────────────
+  // ── 2. 语义搜索（QMD vsearch）────────────────────────────────────────
 
   let semanticResults: Map<string, number> = new Map(); // id → semantic score
 
   if (useSemantics) {
-    // 合并所有候选做语义搜索的语料
-    const allCandidates = deduplicateItems([
-      ...keywordResults,
-      ...agentTagResults,
-    ]);
+    const qmdResults = await qmdVsearch(queryText, keywordCandidateLimit);
 
-    // 如果候选集较少，直接对候选集做语义排序；
-    // 否则可以只取 top N 做语义评分
-    const semanticItems = await semanticSearch<MemoryItem>(
-      queryText,
-      allCandidates,
-      (item) => `${item.title} ${item.content}`,
-      Math.min(allCandidates.length, keywordCandidateLimit),
-    );
-
-    for (const scored of semanticItems) {
-      semanticResults.set(scored.item.id, scored.score);
+    for (const r of qmdResults) {
+      if (r.memoryId) {
+        semanticResults.set(r.memoryId, r.score);
+        // If QMD found items not in keyword results, load and add them
+        if (!keywordResults.some(k => k.id === r.memoryId) &&
+            !agentTagResults.some(k => k.id === r.memoryId)) {
+          const item = getMemory(r.memoryId);
+          if (item && item.tier <= maxTier) {
+            keywordResults.push(item);
+          }
+        }
+      }
     }
   }
 

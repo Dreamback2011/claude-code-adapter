@@ -21,6 +21,7 @@ import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import type { MemoryItem, CreateMemoryInput, MemoryQuery, MemoryCategory } from "./types.js";
 import { PermissionTier } from "./types.js";
+import { syncItemToQmd, removeItemFromQmd, scheduleQmdReindex, isQmdAvailable } from "./qmd-search.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const MEMORY_DIR = join(__dirname, "../../memory");
@@ -112,6 +113,12 @@ export function createMemory(input: CreateMemoryInput): MemoryItem {
   });
   saveIndex();
 
+  // Sync to QMD for semantic search
+  if (isQmdAvailable()) {
+    syncItemToQmd(item);
+    scheduleQmdReindex();
+  }
+
   console.log(`[memory] Created: ${item.id} — "${item.title}" (${item.category}, T${item.tier})`);
   return item;
 }
@@ -155,6 +162,12 @@ export function updateMemory(id: string, updates: Partial<Pick<MemoryItem, "titl
     saveIndex();
   }
 
+  // Sync to QMD for semantic search
+  if (isQmdAvailable()) {
+    syncItemToQmd(updated);
+    scheduleQmdReindex();
+  }
+
   console.log(`[memory] Updated: ${id} — "${updated.title}"`);
   return updated;
 }
@@ -171,6 +184,12 @@ export function deleteMemory(id: string): boolean {
 
   memoryIndex = memoryIndex.filter((e) => e.id !== id);
   saveIndex();
+
+  // Remove from QMD
+  if (isQmdAvailable()) {
+    removeItemFromQmd(id);
+    scheduleQmdReindex();
+  }
 
   console.log(`[memory] Deleted: ${id}`);
   return true;

@@ -293,6 +293,9 @@ export { extractMemories, parseAndSaveMemoryTags };
 export { ragQuery, preloadModel, isModelLoaded };
 export type { RAGQuery, RAGResult, ScoredRAGItem };
 
+// QMD
+export { fullSync as qmdFullSync } from "./qmd-search.js";
+
 // Types
 export type {
   MemoryItem,

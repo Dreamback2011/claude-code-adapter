@@ -10,6 +10,8 @@
  * - 动态导入依赖，未安装时优雅降级
  */
 
+import { isQmdAvailable, initQmdCollection } from "./qmd-search.js";
+
 // ─── 类型定义 ───────────────────────────────────────────────────────────────────
 
 export interface ScoredItem<T> {
@@ -22,22 +24,29 @@ export interface ScoredItem<T> {
 let extractor: any = null;
 let modelLoaded = false;
 let modelLoadFailed = true; // ONNX disabled — Apple Silicon SIGABRT
+let qmdInitialized = false;
 
 const MODEL_NAME = "Xenova/all-MiniLM-L6-v2";
 
 /**
- * 检查模型是否已加载
+ * 检查语义搜索是否可用。
+ * 现在 QMD 可用时返回 true（替代 ONNX）。
  */
 export function isModelLoaded(): boolean {
-  return modelLoaded;
+  return qmdInitialized || isQmdAvailable();
 }
 
 /**
- * 预加载模型 — 已禁用（ONNX 在 Apple Silicon 上导致 SIGABRT）
+ * 预加载模型 — 现在初始化 QMD collection（替代 ONNX）
  */
 export async function preloadModel(): Promise<void> {
-  console.log("[embeddings] Embedding model disabled (ONNX SIGABRT on Apple Silicon)");
-  return;
+  if (isQmdAvailable()) {
+    const ok = await initQmdCollection();
+    qmdInitialized = ok;
+    console.log(`[embeddings] QMD semantic search: ${ok ? "ready" : "failed to init"}`);
+  } else {
+    console.log("[embeddings] QMD not available, semantic search disabled");
+  }
 }
 
 /**
