@@ -8,7 +8,6 @@
     "dev": "tsx watch src/index.ts"
   },
   "dependencies": {
-    "@huggingface/transformers": "^3.8.1",
     "@web3auth/base": "^9.7.0",
     "@web3auth/ethereum-provider": "^9.7.0",
     "@web3auth/node-sdk": "^5.0.0",

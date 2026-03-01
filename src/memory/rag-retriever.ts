@@ -199,6 +199,8 @@ export async function ragQuery(query: RAGQuery): Promise<RAGResult> {
           const item = getMemory(r.memoryId);
           if (item && item.tier <= maxTier) {
             keywordResults.push(item);
+          } else if (!item) {
+            console.warn(`[rag] QMD returned stale memoryId "${r.memoryId}" — not found in store`);
           }
         }
       }

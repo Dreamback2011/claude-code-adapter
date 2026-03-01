@@ -49,6 +49,15 @@ export interface QmdSearchResult {
   memoryId?: string;
 }
 
+/** Raw JSON entry returned by QMD CLI */
+interface QmdRawEntry {
+  docid?: string;
+  score?: number;
+  file?: string;
+  title?: string;
+  snippet?: string;
+}
+
 // ─── 1. Check if QMD binary is available ─────────────────────────────────────
 
 export function isQmdAvailable(): boolean {
@@ -255,7 +264,7 @@ async function runQmdSearch(
       return [];
     }
 
-    return raw.map((r: any) => ({
+    return raw.map((r: QmdRawEntry) => ({
       docid: r.docid ?? "",
       score: r.score ?? 0,
       file: r.file ?? "",
