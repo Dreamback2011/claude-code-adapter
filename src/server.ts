@@ -295,7 +295,8 @@ export function createServer(config: ServerConfig) {
   });
 
   app.get("/v1/memory/items/:id", createAuthMiddleware(config.apiKey), (req, res) => {
-    const item = getMemory(req.params.id);
+    const id = req.params.id as string;
+    const item = getMemory(id);
     if (!item) {
       res.status(404).json({ error: "Memory not found" });
       return;
@@ -304,8 +305,9 @@ export function createServer(config: ServerConfig) {
   });
 
   app.patch("/v1/memory/items/:id", createAuthMiddleware(config.apiKey), (req, res) => {
+    const id = req.params.id as string;
     const { title, content, tags, tier, category, expiresAt } = req.body;
-    const updated = updateMemory(req.params.id, { title, content, tags, tier, category, expiresAt });
+    const updated = updateMemory(id, { title, content, tags, tier, category, expiresAt });
     if (!updated) {
       res.status(404).json({ error: "Memory not found" });
       return;
@@ -314,7 +316,8 @@ export function createServer(config: ServerConfig) {
   });
 
   app.delete("/v1/memory/items/:id", createAuthMiddleware(config.apiKey), (req, res) => {
-    const deleted = deleteMemory(req.params.id);
+    const id = req.params.id as string;
+    const deleted = deleteMemory(id);
     if (!deleted) {
       res.status(404).json({ error: "Memory not found" });
       return;
