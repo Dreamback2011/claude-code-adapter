@@ -71,6 +71,8 @@ export interface AnthropicResponse {
 export interface Usage {
   input_tokens: number;
   output_tokens: number;
+  cache_creation_input_tokens?: number;
+  cache_read_input_tokens?: number;
 }
 
 // SSE Event types for streaming
@@ -96,10 +98,10 @@ export interface CLIResultEvent {
   type: "result";
   result: string;
   session_id: string;
-  cost_usd: number;
-  duration_ms: number;
-  duration_api_ms: number;
-  num_turns: number;
+  cost_usd?: number;
+  duration_ms?: number;
+  duration_api_ms?: number;
+  num_turns?: number;
   is_error?: boolean;
 }
 
@@ -113,13 +115,23 @@ export interface CLIAssistantMessage {
 
 export type CLIOutputLine = CLIStreamEvent | CLIResultEvent | CLIAssistantMessage | { type: string; [key: string]: unknown };
 
+// Delta types for content_block_delta and message_delta events
+export interface StreamDelta {
+  type?: string;
+  text?: string;
+  partial_json?: string;
+  stop_reason?: string;
+  stop_sequence?: string | null;
+  [key: string]: unknown;
+}
+
 // Raw stream events (from Claude API, passed through CLI)
 export interface RawStreamEvent {
   type: string;
   index?: number;
   message?: Partial<AnthropicResponse>;
   content_block?: ContentBlock;
-  delta?: Record<string, unknown>;
+  delta?: StreamDelta;
   usage?: Partial<Usage>;
   [key: string]: unknown;
 }

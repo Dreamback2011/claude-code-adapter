@@ -1,5 +1,7 @@
 node_modules/
 .env
+.env*
+!.env.example
 .adapter.pid
 .adapter.log
 dist/
@@ -8,6 +10,7 @@ dist/
 .sessions.json
 
 # Secrets & tokens
+*.tokens.json
 agents/whoop/.tokens.json
 agents/whoop/whoop-tokens.json
 agents/wecom/contacts.json
@@ -17,4 +20,5 @@ config/discord-routing.json
 logs/
 .trash/
 agents/*/metrics/
+*.log
 /memory/

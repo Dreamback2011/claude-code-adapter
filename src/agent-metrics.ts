@@ -24,6 +24,7 @@ import { fileURLToPath } from "url";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const AGENTS_DIR = join(__dirname, "../agents");
 const RETENTION_DAYS = 30;
+const MAX_LATENCIES = 100; // FIFO cap: keep only the most recent N latency samples
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -53,6 +54,22 @@ export type MetricEvent =
   | { type: "timeout"; agentId: string }
   | { type: "empty_response"; agentId: string; latencyMs: number }
   | { type: "fallback"; agentId: string; originalAgentId: string };
+
+// ─── Agent ID normalization ──────────────────────────────────────────────────
+
+/**
+ * Normalize agentId to prevent inconsistent metrics paths.
+ * Maps undefined, null, empty string, and library sentinel values to "unknown".
+ *
+ * The agent-squad library returns "no_agent_selected" when classification fails,
+ * which is truthy and bypasses `??` fallback. This function catches all variants.
+ */
+export function normalizeAgentId(agentId: string | undefined | null): string {
+  if (!agentId || agentId.trim() === "" || agentId === "no_agent_selected") {
+    return "unknown";
+  }
+  return agentId;
+}
 
 // ─── In-memory daily buffer ──────────────────────────────────────────────────
 
@@ -109,6 +126,12 @@ function getOrCreateBuffer(agentId: string): DailyMetrics {
  * Call this from squad.ts, claude-cli.ts, cli-classifier.ts.
  */
 export function recordMetric(event: MetricEvent): void {
+  // Normalize all agentId fields to prevent inconsistent paths
+  event = { ...event, agentId: normalizeAgentId(event.agentId) };
+  if (event.type === "fallback") {
+    event = { ...event, originalAgentId: normalizeAgentId(event.originalAgentId) };
+  }
+
   const metrics = getOrCreateBuffer(event.agentId);
 
   switch (event.type) {
@@ -156,6 +179,11 @@ export function recordMetric(event: MetricEvent): void {
     metrics.p95LatencyMs = sorted[Math.min(p95Index, sorted.length - 1)];
   }
 
+  // Cap latencies array to prevent unbounded growth (FIFO: keep most recent)
+  if (metrics.latencies.length > MAX_LATENCIES) {
+    metrics.latencies = metrics.latencies.slice(-MAX_LATENCIES);
+  }
+
   // Flush to disk after every event (lightweight, single agent file)
   flushMetrics(event.agentId);
 }
@@ -195,7 +223,12 @@ export function loadDailyMetrics(
   const path = metricsPath(agentId, date);
   if (!existsSync(path)) return null;
   try {
-    return JSON.parse(readFileSync(path, "utf-8"));
+    const metrics: DailyMetrics = JSON.parse(readFileSync(path, "utf-8"));
+    // Trim latencies from legacy files that had no cap
+    if (metrics.latencies && metrics.latencies.length > MAX_LATENCIES) {
+      metrics.latencies = metrics.latencies.slice(-MAX_LATENCIES);
+    }
+    return metrics;
   } catch {
     return null;
   }

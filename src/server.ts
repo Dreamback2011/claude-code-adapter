@@ -8,7 +8,7 @@ import { SessionStore } from "./session-store.js";
 import { createWeComRouter, type WeComConfig } from "./wecom/index.js";
 import { taskManager } from "./task-manager.js";
 import { runTaskAsync } from "./task-runner.js";
-import { recordMetric } from "./agent-metrics.js";
+import { recordMetric, normalizeAgentId } from "./agent-metrics.js";
 import { sendToChannel, resolveChannelName, DISCORD_CHANNELS, type ChannelName } from "./webhook-config.js";
 import { rateRequest, reportExecution, searchMemories, createMemory, getMemory, updateMemory, deleteMemory, getSystemStatus } from "./memory/index.js";
 import { isEmptyResponse, extractOutput } from "./utils.js";
@@ -509,8 +509,8 @@ async function handleAgentSquad(
   const latencyMs = Date.now() - startTime;
 
   let rawOutput = extractOutput(agentResponse.output);
-  let agentId: string = (agentResponse.metadata as any).agentId ?? "unknown";
-  let agentName: string = agentResponse.metadata.agentName ?? "Unknown";
+  let agentId: string = normalizeAgentId((agentResponse.metadata as any).agentId);
+  let agentName: string = agentResponse.metadata.agentName || "Unknown";
 
   // Fallback: if primary agent returned empty/error, retry with general agent
   if (isEmptyResponse(rawOutput) && agentId !== "general") {
@@ -531,9 +531,9 @@ async function handleAgentSquad(
       const fallbackOutput = extractOutput(agentResponse.output);
       if (!isEmptyResponse(fallbackOutput)) {
         rawOutput = fallbackOutput;
-        const fallbackAgentId = (agentResponse.metadata as any).agentId ?? "general";
-        agentId = fallbackAgentId;
-        agentName = agentResponse.metadata.agentName ?? "General";
+        const fallbackAgentId = normalizeAgentId((agentResponse.metadata as any).agentId);
+        agentId = fallbackAgentId === "unknown" ? "general" : fallbackAgentId;
+        agentName = agentResponse.metadata.agentName || "General";
         console.log(`[squad] Fallback succeeded: agent=${agentName}, length=${rawOutput.length}`);
       } else {
         console.warn(`[squad] Fallback also returned empty, using original response`);

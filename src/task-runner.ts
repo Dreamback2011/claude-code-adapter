@@ -13,7 +13,7 @@
 import type { AgentSquad } from "agent-squad";
 import { taskManager } from "./task-manager.js";
 import { recordAgentUse } from "./agent-learning.js";
-import { recordMetric } from "./agent-metrics.js";
+import { recordMetric, normalizeAgentId } from "./agent-metrics.js";
 import { resolveWebhookUrl, splitForDiscord, getChannelWebhook } from "./webhook-config.js";
 import { isEmptyResponse, extractOutput } from "./utils.js";
 
@@ -90,8 +90,8 @@ export async function runTaskAsync(
     const latencyMs = Date.now() - startTime;
 
     let rawOutput = extractOutput(agentResponse.output);
-    agentId = (agentResponse.metadata as any).agentId ?? "unknown";
-    agentName = agentResponse.metadata.agentName ?? "Unknown";
+    agentId = normalizeAgentId((agentResponse.metadata as any).agentId);
+    agentName = agentResponse.metadata.agentName || "Unknown";
 
     // ── Step 2: Executing (classify completed → record) ──────────────────
     taskManager.update(taskId, "executing", `Agent "${agentName}" is processing`, {
@@ -117,8 +117,9 @@ export async function runTaskAsync(
 
         if (!isEmptyResponse(fallbackOutput)) {
           rawOutput = fallbackOutput;
-          agentId = (agentResponse.metadata as any).agentId ?? "general";
-          agentName = agentResponse.metadata.agentName ?? "General";
+          const fallbackAgentId = normalizeAgentId((agentResponse.metadata as any).agentId);
+          agentId = fallbackAgentId === "unknown" ? "general" : fallbackAgentId;
+          agentName = agentResponse.metadata.agentName || "General";
           recordMetric({ type: "success", agentId, latencyMs: fallbackLatency });
           taskManager.update(taskId, "executing", `Fallback to "${agentName}" succeeded`, {
             agentId,
