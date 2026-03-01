@@ -19,7 +19,13 @@ import type { MemoryItem } from "./types.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-const execFile = promisify(execFileCb);
+const execFileRaw = promisify(execFileCb);
+
+/** execFile with a 30-second timeout to prevent hangs */
+const QMD_TIMEOUT_MS = 30_000;
+function execFile(bin: string, args: string[]) {
+  return execFileRaw(bin, args, { timeout: QMD_TIMEOUT_MS, encoding: "utf-8" });
+}
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 

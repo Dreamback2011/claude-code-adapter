@@ -459,9 +459,14 @@ export function getLatestReport(): DailyReport {
  */
 export function runScheduledEvaluation(): void {
   console.log("[evaluator] Running scheduled daily evaluation...");
-  const report = generateDailyReport();
-  cleanupOldMetrics();
-  console.log("[evaluator] Report summary:\n" + report.summary);
+  try {
+    const report = generateDailyReport();
+    cleanupOldMetrics();
+    console.log("[evaluator] Report summary:\n" + report.summary);
+  } catch (err: any) {
+    console.error("[evaluator] Scheduled evaluation failed:", err.message);
+    console.error("[evaluator] Stack:", err.stack);
+  }
 }
 
 /**
