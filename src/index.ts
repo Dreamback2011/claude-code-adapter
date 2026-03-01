@@ -62,4 +62,5 @@ app.listen(config.port, () => {
 
   // Start daily agent evaluation cron (runs at 23:00 local time)
   setupEvaluationCron();
+  console.log('[Evaluation] Cron job initialized');
 });

@@ -423,7 +423,7 @@ function messagesHandler(config: ServerConfig) {
     // Acquire a CLI slot (queues if at max concurrency)
     await acquireCLISlot();
 
-    let lastAgentId = "unknown";
+    let lastAgentId = "unrouted";
     try {
       if (config.useAgentSquad) {
         const result = await handleAgentSquad(body, res, config, externalSessionId, cliSessionId);
@@ -535,7 +535,7 @@ async function handleAgentSquad(
       if (!isEmptyResponse(fallbackOutput)) {
         rawOutput = fallbackOutput;
         const fallbackAgentId = normalizeAgentId((agentResponse.metadata as any).agentId);
-        agentId = fallbackAgentId === "unknown" ? "general" : fallbackAgentId;
+        agentId = fallbackAgentId === "unrouted" ? "general" : fallbackAgentId;
         agentName = agentResponse.metadata.agentName || "General";
         console.log(`[squad] Fallback succeeded: agent=${agentName}, length=${rawOutput.length}`);
       } else {

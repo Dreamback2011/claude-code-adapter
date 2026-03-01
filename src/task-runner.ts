@@ -75,7 +75,7 @@ export async function runTaskAsync(
   sessionId?: string
 ): Promise<void> {
   const requestId = taskId;
-  let agentId = "unknown";
+  let agentId = "unrouted";
   let agentName = "Unknown";
 
   try {
@@ -118,7 +118,7 @@ export async function runTaskAsync(
         if (!isEmptyResponse(fallbackOutput)) {
           rawOutput = fallbackOutput;
           const fallbackAgentId = normalizeAgentId((agentResponse.metadata as any).agentId);
-          agentId = fallbackAgentId === "unknown" ? "general" : fallbackAgentId;
+          agentId = fallbackAgentId === "unrouted" ? "general" : fallbackAgentId;
           agentName = agentResponse.metadata.agentName || "General";
           recordMetric({ type: "success", agentId, latencyMs: fallbackLatency });
           taskManager.update(taskId, "executing", `Fallback to "${agentName}" succeeded`, {

@@ -59,14 +59,17 @@ export type MetricEvent =
 
 /**
  * Normalize agentId to prevent inconsistent metrics paths.
- * Maps undefined, null, empty string, and library sentinel values to "unknown".
+ * Maps undefined, null, empty string, and library sentinel values to "unrouted".
+ *
+ * "unrouted" indicates no agent was successfully selected for the request,
+ * which is more descriptive than the previous "unknown" label.
  *
  * The agent-squad library returns "no_agent_selected" when classification fails,
  * which is truthy and bypasses `??` fallback. This function catches all variants.
  */
 export function normalizeAgentId(agentId: string | undefined | null): string {
   if (!agentId || agentId.trim() === "" || agentId === "no_agent_selected") {
-    return "unknown";
+    return "unrouted";
   }
   return agentId;
 }
