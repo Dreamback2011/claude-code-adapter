@@ -1,6 +1,8 @@
 import { Agent, AgentOptions } from "agent-squad";
 import type { ConversationMessage } from "agent-squad";
 import { invokeClaudeCLI } from "../claude-cli.js";
+import { recordMetric } from "../agent-metrics.js";
+import { enrichContext, formatEnrichment } from "../memory/index.js";
 import type { CLIStreamEvent, CLIResultEvent } from "../types.js";
 
 export interface ClaudeCodeAgentOptions extends AgentOptions {
@@ -30,11 +32,27 @@ export class ClaudeCodeAgent extends Agent {
 
   async processRequest(
     inputText: string,
-    _userId: string,
-    _sessionId: string,
+    userId: string,
+    sessionId: string,
     chatHistory: ConversationMessage[],
     _additionalParams?: Record<string, string>
   ): Promise<ConversationMessage> {
+    // === Memory enrichment: load relevant memories + active progress ===
+    let memoryContext = "";
+    try {
+      const callerCtx = { sessionId, userId, agentId: this.id };
+      const enrichment = await enrichContext(this.id, callerCtx, inputText);
+      memoryContext = formatEnrichment(enrichment);
+      if (memoryContext) {
+        console.log(
+          `[agent:${this.id}] Memory enriched: ${enrichment.memories.length} memories, ${enrichment.activeProgress.length} progress`
+        );
+      }
+    } catch (err: any) {
+      // Non-fatal: proceed without memory context
+      console.warn(`[agent:${this.id}] Memory enrichment failed:`, err.message);
+    }
+
     // Build a prompt that includes recent conversation history
     const historyText = chatHistory
       .slice(-10) // last 5 turns
@@ -45,11 +63,13 @@ export class ClaudeCodeAgent extends Agent {
       }`)
       .join("\n");
 
-    const fullPrompt = historyText
-      ? `${historyText}\nHuman: ${inputText}`
-      : inputText;
+    const fullPrompt = memoryContext
+      + (historyText ? `${historyText}\nHuman: ${inputText}` : inputText);
 
     let resultText = "";
+    const agentStartTime = Date.now();
+    let cliCostUsd = 0;
+    let cliDurationMs = 0;
 
     try {
       for await (const line of invokeClaudeCLI({
@@ -64,6 +84,9 @@ export class ClaudeCodeAgent extends Agent {
           if (!resultText && r.result) {
             resultText = r.result;
           }
+          // Capture cost and duration from CLI result
+          if (r.cost_usd) cliCostUsd = r.cost_usd;
+          if (r.duration_ms) cliDurationMs = r.duration_ms;
         } else if (line.type === "stream_event") {
           const se = line as CLIStreamEvent;
           const evt = se.event;
@@ -76,6 +99,13 @@ export class ClaudeCodeAgent extends Agent {
         }
       }
     } catch (err: any) {
+      const errorLatency = Date.now() - agentStartTime;
+      // Check if it's a timeout error
+      if (err.message?.includes("timeout") || err.message?.includes("Idle timeout")) {
+        recordMetric({ type: "timeout", agentId: this.id });
+      } else {
+        recordMetric({ type: "error", agentId: this.id, latencyMs: errorLatency });
+      }
       resultText = `[ClaudeCodeAgent error: ${err.message}]`;
     }
 

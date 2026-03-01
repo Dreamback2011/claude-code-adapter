@@ -10,7 +10,20 @@ export interface AnthropicRequest {
   top_p?: number;
   top_k?: number;
   stop_sequences?: string[];
-  metadata?: Record<string, unknown>;
+  metadata?: RequestMetadata;
+}
+
+export interface RequestMetadata {
+  /** Trigger async mode: fire-and-forget + webhook delivery */
+  async?: boolean;
+  /** Webhook URL to deliver the result to */
+  webhook_url?: string;
+  /** Session ID for routing context */
+  session_id?: string;
+  /** User ID for tracking */
+  user_id?: string;
+  /** Any extra fields */
+  [key: string]: unknown;
 }
 
 export interface SystemBlock {

@@ -7,9 +7,20 @@ for (const key of Object.keys(process.env)) {
   }
 }
 
+// Global EPIPE protection — prevent pipe errors from crashing the server
+process.on("uncaughtException", (err: NodeJS.ErrnoException) => {
+  if (err.code === "EPIPE" || err.code === "ECONNRESET") {
+    console.warn("[global] Caught EPIPE/ECONNRESET (client disconnected):", err.message);
+    return; // Don't crash
+  }
+  console.error("[global] Uncaught exception:", err);
+  process.exit(1);
+});
+
 import "dotenv/config";
 import { createServer } from "./server.js";
 import { pruneOldMessages } from "./message-logger.js";
+import { getMemoryStats, reloadIndex } from "./memory/index.js";
 
 const useAgentSquad = process.env.USE_AGENT_SQUAD === "true";
 
@@ -34,10 +45,17 @@ app.listen(config.port, () => {
 │  Auth:     ${(config.apiKey ? "enabled" : "disabled").padEnd(33)}│
 │  Tools:    ${config.allowedTools.padEnd(33)}│
 │  AgentSquad: ${(useAgentSquad ? "ENABLED" : "disabled").padEnd(31)}│
+│  X-Timeline: ${"ACTIVE (every 1h)".padEnd(31)}│
+│  Embedding: ${"disabled".padEnd(33)}│
 ├─────────────────────────────────────────────┤
 │  OpenClaw Config:                           │
 │  Base URL: http://127.0.0.1:${String(config.port).padEnd(15)}│
 │  Endpoint: Anthropic-compatible (/messages) │
 └─────────────────────────────────────────────┘
   `);
+
+  // Pre-load memory index
+  reloadIndex();
+  const memStats = getMemoryStats();
+  console.log(`[memory] Index pre-loaded: ${memStats.total} items (${Object.entries(memStats.byCategory).map(([k,v]) => `${k}:${v}`).join(', ')})`);
 });

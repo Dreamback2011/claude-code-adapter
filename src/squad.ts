@@ -39,6 +39,9 @@ export function createSquad(allowedTools: string): AgentSquad {
       systemPrompt: def.systemPrompt || undefined,
     });
 
+    // Override auto-generated ID with SKILL.md id for consistent metrics/learning paths
+    agent.id = def.id;
+
     squad.addAgent(agent);
 
     // "general" is the default fallback

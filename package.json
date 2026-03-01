@@ -8,9 +8,15 @@
     "dev": "tsx watch src/index.ts"
   },
   "dependencies": {
+    "@huggingface/transformers": "^3.8.1",
+    "@web3auth/base": "^9.7.0",
+    "@web3auth/ethereum-provider": "^9.7.0",
+    "@web3auth/node-sdk": "^5.0.0",
     "agent-squad": "^1.0.1",
     "dotenv": "^16.4.5",
+    "ethers": "^6.16.0",
     "express": "^4.21.0",
+    "open": "^11.0.0",
     "uuid": "^11.0.0"
   },
   "devDependencies": {

@@ -6,6 +6,31 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // agents/ directory is at repo root: ../../agents/ relative to src/agents/
 const AGENTS_DIR = join(__dirname, "../../agents");
 
+// ─── Memory System Instructions (injected into ALL agent system prompts) ─────
+
+const MEMORY_INSTRUCTIONS = `
+
+## Memory System
+
+You have access to a persistent memory system. If you discover important information during this conversation that should be remembered across sessions, mark it using XML tags:
+
+<save-memory category="context" title="short descriptive title">
+The fact, preference, decision, or knowledge to remember.
+</save-memory>
+
+**When to save memory:**
+- User explicitly asks you to remember something
+- Important decisions or preferences ("我喜欢...", "以后都用...")
+- Key technical facts (configs, endpoints, credentials references)
+- Project milestones or status changes
+- Recurring patterns or corrections
+
+**Categories:** context (facts/preferences), progress (task status), daily (observations), agent (agent-specific state)
+
+**Do NOT save:** trivial/obvious info, temporary state, anything already in your system prompt.
+Only use this when something is genuinely worth remembering. Most conversations won't need it.
+`;
+
 export interface AgentDefinition {
   name: string;
   id: string;
@@ -39,6 +64,11 @@ function parseSKILL(content: string): AgentDefinition | null {
 
   if (!meta.name || !meta.id) return null;
 
+  // Inject memory system instructions into every agent's system prompt
+  const fullSystemPrompt = systemPrompt
+    ? systemPrompt + MEMORY_INSTRUCTIONS
+    : MEMORY_INSTRUCTIONS.trim();
+
   return {
     name: meta.name,
     id: meta.id,
@@ -46,7 +76,7 @@ function parseSKILL(content: string): AgentDefinition | null {
     category: meta.category ?? meta.id,
     description: meta.description ?? "",
     status: (meta.status as "active" | "archived") ?? "active",
-    systemPrompt,
+    systemPrompt: fullSystemPrompt,
   };
 }
 

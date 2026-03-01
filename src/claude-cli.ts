@@ -1,4 +1,4 @@
-import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
 import type { CLIOutputLine } from "./types.js";
 
@@ -14,12 +14,130 @@ export interface CLIOptions {
   maxBudgetUsd?: number;
 }
 
-// Timeout: kill CLI if no output for this many ms
-const CLI_IDLE_TIMEOUT_MS = 600_000; // 10 minutes
+// === Adaptive timeouts based on CLI state ===
+const TIMEOUT_THINKING_MS = 300_000;      // 5 min — Claude should produce output regularly
+const TIMEOUT_TOOL_RUNNING_MS = 1_800_000; // 30 min — tools like bash can run long
+const TIMEOUT_RESPONDING_MS = 300_000;     // 5 min — streaming text response
+const TIMEOUT_IDLE_MS = 600_000;           // 10 min — fallback for unknown/idle state
 // Hard timeout: kill CLI after this many ms regardless
-const CLI_HARD_TIMEOUT_MS = 86_400_000; // 24 hours
-// How often to check if CLI has active child processes (tools/bash running)
-const ACTIVE_CHECK_INTERVAL_MS = 30_000; // 30 seconds
+const CLI_HARD_TIMEOUT_MS = 86_400_000;    // 24 hours
+
+// === Progress tracking ===
+
+export type CLIState = 'idle' | 'thinking' | 'tool_running' | 'responding' | 'done' | 'error';
+
+export interface CLIProgress {
+  pid: number;
+  state: CLIState;
+  lastEventType: string;
+  lastEventTime: number;  // Date.now()
+  eventCount: number;
+  startTime: number;
+  toolName?: string;      // current tool being used
+}
+
+/** Registry of all active CLI processes and their progress */
+const activeProcesses = new Map<number, CLIProgress>();
+
+/** Get the current state of all active CLI processes */
+export function getActiveProcesses(): CLIProgress[] {
+  return Array.from(activeProcesses.values());
+}
+
+/** Get the timeout duration for a given CLI state */
+function getTimeoutForState(state: CLIState): number {
+  switch (state) {
+    case 'thinking':     return TIMEOUT_THINKING_MS;
+    case 'tool_running': return TIMEOUT_TOOL_RUNNING_MS;
+    case 'responding':   return TIMEOUT_RESPONDING_MS;
+    default:             return TIMEOUT_IDLE_MS;
+  }
+}
+
+/**
+ * Determine the CLI state from a parsed stream-json event.
+ *
+ * Stream event types from Claude CLI:
+ * - "system"    — startup info
+ * - "assistant" — message with content blocks (text, tool_use, tool_result)
+ * - "result"    — final result, CLI is done
+ *
+ * For "assistant" events, we inspect message.content blocks:
+ * - tool_use block   → tool_running (extract tool name)
+ * - tool_result block → thinking (tool finished, back to thinking)
+ * - text block        → responding (Claude is writing text)
+ *
+ * For stream_event types, we look at the inner event:
+ * - content_block_start with tool_use → tool_running
+ * - content_block_start with text     → responding
+ * - content_block_delta with text     → responding
+ * - message_start / message_delta     → thinking
+ */
+function detectState(parsed: CLIOutputLine): { state: CLIState; toolName?: string } {
+  const eventType = parsed.type;
+
+  // Final result — done
+  if (eventType === 'result') {
+    return { state: 'done' };
+  }
+
+  // System event — still starting up / thinking
+  if (eventType === 'system') {
+    return { state: 'thinking' };
+  }
+
+  // Assistant message — inspect content blocks
+  if (eventType === 'assistant') {
+    const msg = (parsed as { message?: { content?: Array<{ type: string; name?: string }> } }).message;
+    const content = msg?.content;
+    if (Array.isArray(content) && content.length > 0) {
+      // Check blocks in reverse order — last block is the most recent activity
+      for (let i = content.length - 1; i >= 0; i--) {
+        const block = content[i];
+        if (block.type === 'tool_use') {
+          return { state: 'tool_running', toolName: block.name };
+        }
+        if (block.type === 'tool_result') {
+          // Tool just finished, Claude is thinking about what to do next
+          return { state: 'thinking' };
+        }
+        if (block.type === 'text') {
+          return { state: 'responding' };
+        }
+      }
+    }
+    return { state: 'thinking' };
+  }
+
+  // Stream event — inspect the inner event
+  if (eventType === 'stream_event') {
+    const inner = (parsed as { event?: { type?: string; content_block?: { type: string; name?: string }; delta?: { type?: string } } }).event;
+    if (inner) {
+      if (inner.type === 'content_block_start') {
+        if (inner.content_block?.type === 'tool_use') {
+          return { state: 'tool_running', toolName: inner.content_block.name };
+        }
+        if (inner.content_block?.type === 'text') {
+          return { state: 'responding' };
+        }
+      }
+      if (inner.type === 'content_block_delta') {
+        if (inner.delta?.type === 'text_delta') {
+          return { state: 'responding' };
+        }
+        if (inner.delta?.type === 'input_json_delta') {
+          return { state: 'tool_running' };
+        }
+      }
+      if (inner.type === 'message_start' || inner.type === 'message_delta') {
+        return { state: 'thinking' };
+      }
+    }
+  }
+
+  // Unknown event type — don't change state
+  return { state: 'idle' };
+}
 
 /**
  * Invoke Claude Code CLI in non-interactive mode.
@@ -39,6 +157,11 @@ const ACTIVE_CHECK_INTERVAL_MS = 30_000; // 30 seconds
  *   2. readline reads from the SAME stream (for line-by-line yielding)
  *   3. After readline closes, drain any unparsed bytes from the buffer
  *   4. Then waitForExit (confirms process + all hooks completed)
+ *
+ * === Progress Monitoring ===
+ * Instead of blind idle timeouts + pgrep polling, this function parses
+ * each stream-json event to determine CLI state (thinking, tool_running,
+ * responding, done) and applies adaptive timeouts per state.
  */
 export async function* invokeClaudeCLI(
   options: CLIOptions
@@ -68,8 +191,61 @@ export async function* invokeClaudeCLI(
 
   console.log("[cli] Process spawned, pid:", proc.pid);
 
+  // Guard pipes against EPIPE — prevents unhandled errors from crashing the server
+  proc.stdout?.on("error", (err) => {
+    console.warn("[cli] stdout pipe error:", err.message);
+  });
+  proc.stderr?.on("error", (err) => {
+    console.warn("[cli] stderr pipe error:", err.message);
+  });
+  proc.stdin?.on("error", (err) => {
+    console.warn("[cli] stdin pipe error:", err.message);
+  });
+
   // Close stdin immediately — we don't send any input
   proc.stdin?.end();
+
+  // === Initialize progress tracking ===
+  const pid = proc.pid ?? 0;
+  const progress: CLIProgress = {
+    pid,
+    state: 'idle',
+    lastEventType: '',
+    lastEventTime: Date.now(),
+    eventCount: 0,
+    startTime: Date.now(),
+  };
+  if (pid > 0) {
+    activeProcesses.set(pid, progress);
+  }
+
+  /** Update progress state and log transitions */
+  function updateProgress(parsed: CLIOutputLine): void {
+    const { state: newState, toolName } = detectState(parsed);
+    const oldState = progress.state;
+
+    progress.lastEventType = parsed.type;
+    progress.lastEventTime = Date.now();
+    progress.eventCount++;
+
+    // Only log meaningful state transitions (not idle → idle)
+    if (newState !== 'idle' && newState !== oldState) {
+      const toolInfo = toolName ? ` (tool: ${toolName})` : '';
+      const elapsed = oldState !== 'idle'
+        ? ` (after ${Math.round((Date.now() - progress.startTime) / 1000)}s)`
+        : '';
+      console.log(`[cli:progress] pid=${pid} ${oldState} → ${newState}${toolInfo}${elapsed}`);
+      progress.state = newState;
+    }
+
+    if (toolName) {
+      progress.toolName = toolName;
+    }
+    // Clear tool name when leaving tool_running state
+    if (newState !== 'tool_running' && newState !== 'idle') {
+      progress.toolName = undefined;
+    }
+  }
 
   // Capture stderr for error reporting
   let stderrData = "";
@@ -81,6 +257,7 @@ export async function* invokeClaudeCLI(
 
   proc.on("error", (err) => {
     console.error("[cli] Process error:", err.message);
+    progress.state = 'error';
   });
 
   // === RAW BUFFER — captures ALL stdout bytes, even after readline ends ===
@@ -111,21 +288,25 @@ export async function* invokeClaudeCLI(
   // Hard timeout — kill process after max time
   const hardTimer = setTimeout(() => {
     console.error("[cli] Hard timeout reached, killing process", proc.pid);
+    progress.state = 'error';
     killProc(proc);
   }, CLI_HARD_TIMEOUT_MS);
 
-  // Idle timeout — kill if no output for a while
+  // Adaptive idle timeout — duration depends on current CLI state
   let idleTimer = setTimeout(() => {
-    console.error("[cli] Idle timeout reached, killing process", proc.pid);
+    console.error(`[cli] Adaptive timeout reached in state '${progress.state}', killing process`, proc.pid);
+    progress.state = 'error';
     killProc(proc);
-  }, CLI_IDLE_TIMEOUT_MS);
+  }, getTimeoutForState(progress.state));
 
   const resetIdleTimer = () => {
     clearTimeout(idleTimer);
+    const timeout = getTimeoutForState(progress.state);
     idleTimer = setTimeout(() => {
-      console.error("[cli] Idle timeout reached, killing process", proc.pid);
+      console.error(`[cli] Adaptive timeout reached in state '${progress.state}' (${Math.round(timeout / 1000)}s), killing process`, proc.pid);
+      progress.state = 'error';
       killProc(proc);
-    }, CLI_IDLE_TIMEOUT_MS);
+    }, timeout);
   };
 
   const rl = createInterface({ input: proc.stdout! });
@@ -135,18 +316,8 @@ export async function* invokeClaudeCLI(
   const yieldedLines = new Set<number>();
   let rawLineIndex = 0;
 
-  // Periodically check if CLI has active child processes (e.g. running bash/tools).
-  // If so, reset the idle timer so long-running tools don't get killed mid-task.
-  const activeCheckInterval = setInterval(() => {
-    if (proc.pid && hasActiveChildren(proc.pid)) {
-      console.log("[cli] Active child processes detected, resetting idle timer");
-      resetIdleTimer();
-    }
-  }, ACTIVE_CHECK_INTERVAL_MS);
-
   try {
     for await (const line of rl) {
-      resetIdleTimer();
       const trimmed = line.trim();
       if (!trimmed) {
         rawLineIndex++;
@@ -157,6 +328,13 @@ export async function* invokeClaudeCLI(
         lineCount++;
         yieldedLines.add(rawLineIndex);
         rawLineIndex++;
+
+        // Update progress tracking (side effect — does not alter parsed event)
+        updateProgress(parsed);
+        // Reset idle timer AFTER updating state, so the new timeout
+        // duration matches the current state
+        resetIdleTimer();
+
         if (lineCount <= 3 || parsed.type === "result") {
           console.log("[cli] Event:", parsed.type, lineCount <= 3 ? "" : `(total: ${lineCount})`);
         }
@@ -165,6 +343,8 @@ export async function* invokeClaudeCLI(
         // Non-JSON line (debug output, etc.)
         console.log("[cli:raw]", trimmed.slice(0, 200));
         rawLineIndex++;
+        // Still reset idle timer on any output
+        resetIdleTimer();
       }
     }
 
@@ -183,6 +363,7 @@ export async function* invokeClaudeCLI(
         const parsed: CLIOutputLine = JSON.parse(trimmed);
         drainCount++;
         lineCount++;
+        updateProgress(parsed);
         console.log("[cli] Drain event:", parsed.type, `(line ${i})`);
         yield parsed;
       } catch {
@@ -196,7 +377,13 @@ export async function* invokeClaudeCLI(
   } finally {
     clearTimeout(hardTimer);
     clearTimeout(idleTimer);
-    clearInterval(activeCheckInterval);
+    // Mark as done and remove from active registry
+    if (progress.state !== 'error') {
+      progress.state = 'done';
+    }
+    if (pid > 0) {
+      activeProcesses.delete(pid);
+    }
   }
 
   console.log("[cli] Stream ended, total events:", lineCount);
@@ -221,7 +408,12 @@ function buildArgs(options: CLIOptions): string[] {
   args.push("--include-partial-messages");
 
   if (options.allowedTools) {
-    args.push("--allowedTools", options.allowedTools);
+    // Split comma-separated tools into individual arguments
+    // Claude Code CLI --allowedTools is variadic: expects each tool as a separate arg
+    const tools = options.allowedTools.split(",").map((t) => t.trim()).filter(Boolean);
+    if (tools.length > 0) {
+      args.push("--allowedTools", ...tools);
+    }
   }
 
   if (options.systemPrompt) {
@@ -243,24 +435,6 @@ function buildArgs(options: CLIOptions): string[] {
   }
 
   return args;
-}
-
-/**
- * Check if a process has active child processes.
- * Uses `ps` to list processes whose parent PID matches.
- * Returns true if any children exist (CLI is running a tool/bash command).
- */
-function hasActiveChildren(pid: number): boolean {
-  try {
-    // pgrep -P <pid> lists child processes; exit code 0 = children found
-    const result = spawnSync("pgrep", ["-P", String(pid)], {
-      encoding: "utf8",
-      timeout: 3000,
-    });
-    return result.status === 0 && result.stdout.trim().length > 0;
-  } catch {
-    return false;
-  }
 }
 
 function killProc(proc: ChildProcess): void {

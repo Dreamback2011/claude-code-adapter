@@ -1,0 +1,41 @@
+{
+  "repos": [
+    {
+      "owner": "anthropics",
+      "repo": "claude-code",
+      "watch": ["releases", "breaking-prs"],
+      "priority": "high",
+      "notify": "#github-agent"
+    },
+    {
+      "owner": "anthropics",
+      "repo": "anthropic-sdk-typescript",
+      "watch": ["releases"],
+      "priority": "medium",
+      "notify": "#github-agent"
+    },
+    {
+      "owner": "anthropics",
+      "repo": "courses",
+      "watch": ["releases", "new-content"],
+      "priority": "low",
+      "notify": "#github-agent"
+    },
+    {
+      "owner": "awslabs",
+      "repo": "agent-squad",
+      "watch": ["releases", "breaking-prs"],
+      "priority": "high",
+      "notify": "#github-agent"
+    }
+  ],
+  "schedule": {
+    "scan_interval_hours": 4,
+    "digest": "weekly-monday-9am"
+  },
+  "self_repo": {
+    "owner": "Dreamback2011",
+    "repo": "claude-code-adapter",
+    "auto_checkpoint": true
+  }
+}

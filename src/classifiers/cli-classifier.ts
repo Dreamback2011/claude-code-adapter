@@ -16,6 +16,23 @@ export class CLIClassifier extends Classifier {
 
   constructor(options?: { allowedTools?: string; model?: string }) {
     super();
+    this.promptTemplate = `You are an intent router. Analyze the user's input and route it to the best agent.
+
+Available agents:
+<agents>
+{{AGENT_DESCRIPTIONS}}
+</agents>
+
+Conversation history:
+<history>
+{{HISTORY}}
+</history>
+
+Rules:
+- If the input is a follow-up (e.g. "yes", "ok", "tell me more"), keep the same agent as the previous turn.
+- Pick the agent whose description best matches the user's intent.
+- If unsure, pick "general".
+`;
     this.allowedTools = options?.allowedTools ?? "none";
     this.model = options?.model;
   }
@@ -27,12 +44,16 @@ export class CLIClassifier extends Classifier {
     // Build classification prompt using Agent Squad's system prompt (contains agent descriptions)
     // Category guidance injected to help the LLM understand the routing intent
     const categoryHint = `
-ROUTING CATEGORIES (use these as primary signals):
-- 💼 work-agent    : BD strategy, crypto/Web3 industry, Bitget Wallet, partnerships, TradFi, WaaS, XRPL/Solana/Base
-- 📡 signal-agent  : Price signals, alpha opportunities, regulatory risk, exchange events, on-chain data
-- 🌱 life-agent    : Health, diet, meal planning, fitness, sleep, travel, personal development, lifestyle
-- 🤖 openclaw-agent: AI tools, Claude, MCP, automation, TypeScript/coding, OpenClaw configuration, skills
-- 📎 general-agent : Everything else — general questions, writing, research, math, history, culture
+ROUTING CATEGORIES (use these as primary signals — agentId must EXACTLY match the ID shown):
+- 💼 work           : BD strategy, crypto/Web3 industry, Bitget Wallet, partnerships, TradFi, WaaS, XRPL/Solana/Base
+- 📡 signal         : Price signals, alpha opportunities, regulatory risk, exchange events, on-chain data
+- 💪 health         : WHOOP data, recovery score, HRV, resting heart rate, sleep quality/stages, strain, workout data, biometrics, body measurement, weight, SpO2, skin temperature, 健康指标, 恢复, 心率, 睡眠
+- 🌱 life           : Diet, meal planning, travel, personal development, lifestyle coaching, habit building, daily routine (NOT biometric data queries)
+- 🤖 openclaw       : AI tools, Claude, MCP, automation, TypeScript/coding, OpenClaw configuration, skills
+- 📨 telegram       : Send Telegram messages, read chat history, search contacts, DM someone, reply to messages, TG
+- 📰 x-timeline     : X/Twitter timeline, tweets, social media monitoring
+- 🔔 github-updates : GitHub repo updates, git commits, rollback, checkpoint, deploy, CI/CD, self-repair, version tracking
+- 📎 general        : Everything else — general questions, writing, research, math, history, culture
 `;
 
     const classificationPrompt = `${this.systemPrompt}

@@ -4,7 +4,7 @@ id: "life"
 emoji: "🌱"
 category: "life"
 description: "Health, lifestyle, travel, personal development, wellness planning"
-status: active
+status: "active"
 created: 2026-02-27
 ---
 
