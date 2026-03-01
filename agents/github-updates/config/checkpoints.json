@@ -65,7 +65,23 @@
       ],
       "health": "pass",
       "rollbackSafe": true
+    },
+    {
+      "id": "cp-004",
+      "timestamp": "2026-03-01T21:13:55.938Z",
+      "commit": "1bda73f",
+      "branch": "main",
+      "summary": "auto-checkpoint: 5 file(s) in agents",
+      "filesChanged": [
+        "agents/general/learning.json",
+        "agents/github-updates/config/checkpoints.json",
+        "agents/github-updates/learning.json",
+        "agents/life/learning.json",
+        "agents/openclaw/learning.json"
+      ],
+      "health": "pass",
+      "rollbackSafe": true
     }
   ],
-  "lastId": 3
+  "lastId": 4
 }
