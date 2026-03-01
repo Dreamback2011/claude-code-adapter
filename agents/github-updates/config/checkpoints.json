@@ -180,7 +180,21 @@
       ],
       "health": "pass",
       "rollbackSafe": true
+    },
+    {
+      "id": "cp-011",
+      "timestamp": "2026-03-01T21:48:35.310Z",
+      "commit": "2c49ac5",
+      "branch": "main",
+      "summary": "auto-checkpoint: 3 file(s) in agents",
+      "filesChanged": [
+        "agents/general/learning.json",
+        "agents/github-updates/config/checkpoints.json",
+        "agents/openclaw/learning.json"
+      ],
+      "health": "pass",
+      "rollbackSafe": true
     }
   ],
-  "lastId": 10
+  "lastId": 11
 }
