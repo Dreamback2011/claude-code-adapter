@@ -9,16 +9,16 @@ dist/
 .claude/settings.local.json
 .sessions.json
 
+# OpenClaw private content (moved to Junebot_Openclaw private repo)
+agents/
+skills/
+
 # Secrets & tokens
 *.tokens.json
-agents/whoop/.tokens.json
-agents/whoop/whoop-tokens.json
-agents/wecom/contacts.json
 config/discord-routing.json
 
 # Runtime data (not config)
 logs/
 .trash/
-agents/*/metrics/
 *.log
 /memory/
