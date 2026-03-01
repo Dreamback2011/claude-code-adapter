@@ -15,6 +15,7 @@ import { taskManager } from "./task-manager.js";
 import { recordAgentUse } from "./agent-learning.js";
 import { recordMetric } from "./agent-metrics.js";
 import { resolveWebhookUrl, splitForDiscord, getChannelWebhook } from "./webhook-config.js";
+import { isEmptyResponse, extractOutput } from "./utils.js";
 
 // ── Discord Webhook Delivery ─────────────────────────────────────────────────
 
@@ -53,26 +54,6 @@ async function deliverToDiscord(webhookUrl: string, content: string): Promise<vo
       await new Promise((r) => setTimeout(r, 500));
     }
   }
-}
-
-// ── Helper ────────────────────────────────────────────────────────────────────
-
-function isEmptyResponse(output: string): boolean {
-  const trimmed = output.trim().toLowerCase();
-  if (!trimmed || trimmed.length < 3) return true;
-  const badPatterns = [
-    "(no response)", "no response", "no_reply", "no reply",
-    "no response content", "[claudecodeagent error",
-  ];
-  return badPatterns.some((p) => trimmed.startsWith(p));
-}
-
-function extractOutput(output: any): string {
-  if (typeof output === "string") return output;
-  if (output instanceof Object && "getAccumulatedData" in output) {
-    return output.getAccumulatedData();
-  }
-  return String(output);
 }
 
 // ── Task Runner ───────────────────────────────────────────────────────────────

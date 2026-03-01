@@ -21,6 +21,7 @@ import "dotenv/config";
 import { createServer } from "./server.js";
 import { pruneOldMessages } from "./message-logger.js";
 import { getMemoryStats, reloadIndex } from "./memory/index.js";
+import { setupEvaluationCron } from "./agent-evaluation.js";
 
 const useAgentSquad = process.env.USE_AGENT_SQUAD === "true";
 
@@ -58,4 +59,7 @@ app.listen(config.port, () => {
   reloadIndex();
   const memStats = getMemoryStats();
   console.log(`[memory] Index pre-loaded: ${memStats.total} items (${Object.entries(memStats.byCategory).map(([k,v]) => `${k}:${v}`).join(', ')})`);
+
+  // Start daily agent evaluation cron (runs at 23:00 local time)
+  setupEvaluationCron();
 });

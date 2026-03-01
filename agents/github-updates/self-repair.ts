@@ -9,7 +9,7 @@
  */
 
 import { execSync } from "child_process";
-import { readFileSync, existsSync } from "fs";
+import { readFileSync, writeFileSync, existsSync } from "fs";
 import { join } from "path";
 import { runQuickHealthCheck, type HealthResult } from "./health-check.js";
 import { getLastSafeCheckpoint, markHealth, listCheckpoints } from "./checkpoint.js";
@@ -68,7 +68,6 @@ const KNOWN_PATTERNS: Array<{
         const example = join(process.cwd(), ".env.example");
         if (existsSync(example)) {
           const content = readFileSync(example, "utf-8");
-          const { writeFileSync } = require("fs");
           writeFileSync(join(process.cwd(), ".env"), content);
           return true;
         }

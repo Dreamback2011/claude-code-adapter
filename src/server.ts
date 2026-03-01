@@ -11,6 +11,7 @@ import { runTaskAsync } from "./task-runner.js";
 import { recordMetric } from "./agent-metrics.js";
 import { sendToChannel, resolveChannelName, DISCORD_CHANNELS, type ChannelName } from "./webhook-config.js";
 import { rateRequest, reportExecution, searchMemories, createMemory, getMemory, updateMemory, deleteMemory, getSystemStatus } from "./memory/index.js";
+import { isEmptyResponse, extractOutput } from "./utils.js";
 
 export interface ServerConfig {
   port: number;
@@ -233,7 +234,7 @@ export function createServer(config: ServerConfig) {
   });
 
   // ── Memory Feedback ──────────────────────────────────────────────────────
-  app.post("/v1/memory/feedback", (req, res) => {
+  app.post("/v1/memory/feedback", createAuthMiddleware(config.apiKey), (req, res) => {
     const { requestId, rating, comment } = req.body;
     if (!requestId || !["good", "bad"].includes(rating)) {
       res.status(400).json({ error: "requestId and rating ('good'|'bad') required" });
@@ -252,7 +253,7 @@ export function createServer(config: ServerConfig) {
   });
 
   // ── Memory Search ───────────────────────────────────────────────────────
-  app.post("/v1/memory/search", (req, res) => {
+  app.post("/v1/memory/search", createAuthMiddleware(config.apiKey), (req, res) => {
     const { query, category, tags, source, limit } = req.body;
     try {
       const results = searchMemories({ search: query, category, tags, source, limit });
@@ -263,7 +264,7 @@ export function createServer(config: ServerConfig) {
   });
 
   // ── Memory CRUD ────────────────────────────────────────────────────────
-  app.post("/v1/memory/items", (req, res) => {
+  app.post("/v1/memory/items", createAuthMiddleware(config.apiKey), (req, res) => {
     const { category, title, content, tags, source, tier, expiresAt } = req.body;
     if (!category || !title || !content || !source) {
       res.status(400).json({ error: "category, title, content, and source are required" });
@@ -277,7 +278,7 @@ export function createServer(config: ServerConfig) {
     }
   });
 
-  app.get("/v1/memory/items", (req, res) => {
+  app.get("/v1/memory/items", createAuthMiddleware(config.apiKey), (req, res) => {
     const { category, tags, source, search, limit } = req.query;
     try {
       const results = searchMemories({
@@ -293,7 +294,7 @@ export function createServer(config: ServerConfig) {
     }
   });
 
-  app.get("/v1/memory/items/:id", (req, res) => {
+  app.get("/v1/memory/items/:id", createAuthMiddleware(config.apiKey), (req, res) => {
     const item = getMemory(req.params.id);
     if (!item) {
       res.status(404).json({ error: "Memory not found" });
@@ -302,7 +303,7 @@ export function createServer(config: ServerConfig) {
     res.json(item);
   });
 
-  app.patch("/v1/memory/items/:id", (req, res) => {
+  app.patch("/v1/memory/items/:id", createAuthMiddleware(config.apiKey), (req, res) => {
     const { title, content, tags, tier, category, expiresAt } = req.body;
     const updated = updateMemory(req.params.id, { title, content, tags, tier, category, expiresAt });
     if (!updated) {
@@ -312,7 +313,7 @@ export function createServer(config: ServerConfig) {
     res.json(updated);
   });
 
-  app.delete("/v1/memory/items/:id", (req, res) => {
+  app.delete("/v1/memory/items/:id", createAuthMiddleware(config.apiKey), (req, res) => {
     const deleted = deleteMemory(req.params.id);
     if (!deleted) {
       res.status(404).json({ error: "Memory not found" });
@@ -322,7 +323,7 @@ export function createServer(config: ServerConfig) {
   });
 
   // ── Memory Status ─────────────────────────────────────────────────────
-  app.get("/v1/memory/status", (_req, res) => {
+  app.get("/v1/memory/status", createAuthMiddleware(config.apiKey), (_req, res) => {
     const status = getSystemStatus();
     res.json(status);
   });
@@ -472,31 +473,6 @@ function messagesHandler(config: ServerConfig) {
       releaseCLISlot();
     }
   };
-}
-
-/**
- * Check if agent output is empty or an error placeholder.
- * These indicate the agent failed to produce a real response.
- */
-function isEmptyResponse(output: string): boolean {
-  const trimmed = output.trim().toLowerCase();
-  if (!trimmed || trimmed.length < 3) return true;
-  const badPatterns = [
-    "(no response)", "no response", "no_reply", "no reply",
-    "no response content", "[claudecodeagent error",
-  ];
-  return badPatterns.some((p) => trimmed.startsWith(p));
-}
-
-/**
- * Extract raw text from an AgentSquad response output.
- */
-function extractOutput(output: any): string {
-  if (typeof output === "string") return output;
-  if (output instanceof Object && "getAccumulatedData" in output) {
-    return output.getAccumulatedData();
-  }
-  return String(output);
 }
 
 /**
