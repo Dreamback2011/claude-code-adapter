@@ -23,8 +23,7 @@ import {
   readdirSync,
   readFileSync,
 } from "fs";
-import { join, dirname } from "path";
-import { fileURLToPath } from "url";
+import { join } from "path";
 import {
   loadMetricsRange,
   getAgentIdsWithMetrics,
@@ -34,9 +33,8 @@ import {
 } from "./agent-metrics.js";
 import { getAllAgentStats } from "./agent-learning.js";
 import { getHeartbeatStatus } from "./heartbeat.js";
+import { AGENTS_DIR } from "./paths.js";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const AGENTS_DIR = join(__dirname, "../agents");
 const REPORTS_DIR = join(AGENTS_DIR, "evaluator", "reports");
 
 // ─── Types ───────────────────────────────────────────────────────────────────

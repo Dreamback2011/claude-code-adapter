@@ -14,12 +14,8 @@ import {
   existsSync,
   readdirSync,
 } from "fs";
-import { join, dirname } from "path";
-import { fileURLToPath } from "url";
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-// agents/ is at repo root: ../agents/ relative to src/
-const AGENTS_DIR = join(__dirname, "../agents");
+import { join } from "path";
+import { AGENTS_DIR } from "./paths.js";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 

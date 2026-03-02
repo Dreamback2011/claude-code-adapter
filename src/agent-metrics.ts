@@ -18,11 +18,8 @@ import {
   readdirSync,
   unlinkSync,
 } from "fs";
-import { join, dirname } from "path";
-import { fileURLToPath } from "url";
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const AGENTS_DIR = join(__dirname, "../agents");
+import { join } from "path";
+import { AGENTS_DIR } from "./paths.js";
 const RETENTION_DAYS = 30;
 const MAX_LATENCIES = 100; // FIFO cap: keep only the most recent N latency samples
 

@@ -10,9 +10,10 @@ import type { CLIStreamEvent, CLIResultEvent } from "../types.js";
 import { sendTextMessage, getUserInfo } from "./api.js";
 import { getContact, getContactTags, upsertContact, findContactByName, migrateContactUserId } from "./contacts.js";
 import { invokeClaudeCLI } from "../claude-cli.js";
+import { AGENTS_DIR } from "../paths.js";
 
-const MESSAGE_LOG = path.resolve("agents/wecom/messages.log");
-const SKILL_MD = path.resolve("agents/wecom/SKILL.md");
+const MESSAGE_LOG = path.join(AGENTS_DIR, "wecom/messages.log");
+const SKILL_MD = path.join(AGENTS_DIR, "wecom/SKILL.md");
 
 // ── Per-user conversation history (in-memory) ──────────────────────────────
 const MAX_HISTORY_TURNS = 10; // keep last 10 exchanges per user

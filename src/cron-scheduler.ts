@@ -11,9 +11,9 @@
 
 import { execFile } from "child_process";
 import { existsSync } from "fs";
-import { dirname, join } from "path";
-import { fileURLToPath } from "url";
+import { join } from "path";
 import { runHeartbeat } from "./heartbeat.js";
+import { PROJECT_ROOT } from "./paths.js";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -348,7 +348,7 @@ async function runXTimeline(): Promise<void> {
 
 // ─── Built-in: RSS Daily Task ────────────────────────────────────────────────
 
-const PROJECT_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+// PROJECT_ROOT is imported from ./paths.js
 const RSS_TIMEOUT_MS = 180_000; // 3 min — fetching 186 feeds / AI summarization
 
 /**
@@ -555,7 +555,7 @@ export function setupCronScheduler(): void {
 
   // ── Catch-up: if today's evaluation report is missing, run immediately ────
   const today = new Date().toISOString().slice(0, 10);
-  const todayReportPath = join(dirname(fileURLToPath(import.meta.url)), '..', 'agents', 'evaluator', 'reports', `${today}.json`);
+  const todayReportPath = join(PROJECT_ROOT, 'agents', 'evaluator', 'reports', `${today}.json`);
   if (!existsSync(todayReportPath)) {
     const evalTask = tasks.get("evaluation");
     if (evalTask) {

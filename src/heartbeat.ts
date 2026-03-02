@@ -16,12 +16,9 @@
 
 import { readdirSync, existsSync, readFileSync } from "fs";
 import { execSync } from "child_process";
-import { join, dirname } from "path";
-import { fileURLToPath } from "url";
+import { join } from "path";
 import { sendToChannel } from "./webhook-config.js";
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const AGENTS_DIR = join(__dirname, "../agents");
+import { AGENTS_DIR } from "./paths.js";
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 

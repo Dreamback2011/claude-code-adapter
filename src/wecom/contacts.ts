@@ -6,8 +6,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { ContactInfo, ContactTag } from "./types.js";
+import { AGENTS_DIR } from "../paths.js";
 
-const CONTACTS_FILE = path.resolve("agents/wecom/contacts.json");
+const CONTACTS_FILE = path.join(AGENTS_DIR, "wecom/contacts.json");
 
 let contacts: Map<string, ContactInfo> = new Map();
 
