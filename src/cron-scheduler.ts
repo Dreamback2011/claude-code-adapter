@@ -10,6 +10,7 @@
  */
 
 import { execFile } from "child_process";
+import { existsSync } from "fs";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { runHeartbeat } from "./heartbeat.js";
@@ -549,6 +550,18 @@ export function setupCronScheduler(): void {
       scheduleDailyTask(task);
     } else {
       scheduleIntervalTask(task);
+    }
+  }
+
+  // ── Catch-up: if today's evaluation report is missing, run immediately ────
+  const today = new Date().toISOString().slice(0, 10);
+  const todayReportPath = join(dirname(fileURLToPath(import.meta.url)), '..', 'agents', 'evaluator', 'reports', `${today}.json`);
+  if (!existsSync(todayReportPath)) {
+    const evalTask = tasks.get("evaluation");
+    if (evalTask) {
+      console.log(`[cron] Catch-up: today's evaluation report missing, running now...`);
+      // Run async, don't block startup
+      executeTask(evalTask).catch(err => console.error("[cron] Catch-up evaluation failed:", err.message));
     }
   }
 
