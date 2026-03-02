@@ -33,12 +33,20 @@ import {
   type DailyMetrics,
 } from "./agent-metrics.js";
 import { getAllAgentStats } from "./agent-learning.js";
+import { getHeartbeatStatus } from "./heartbeat.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const AGENTS_DIR = join(__dirname, "../agents");
 const REPORTS_DIR = join(AGENTS_DIR, "evaluator", "reports");
 
 // ─── Types ───────────────────────────────────────────────────────────────────
+
+interface InfrastructureSummary {
+  service: string;
+  currentStatus: "up" | "down" | "unknown";
+  pid: number | null;
+  uptimeSec: number | null;
+}
 
 export type HealthLevel = "HEALTHY" | "NEEDS_OPTIMIZATION" | "NEEDS_OVERHAUL" | "CRITICAL";
 
@@ -70,6 +78,7 @@ export interface AgentEvaluation {
 export interface DailyReport {
   date: string;
   generatedAt: string;
+  infrastructure: InfrastructureSummary[];
   evaluations: AgentEvaluation[];
   summary: string;
 }
@@ -352,11 +361,30 @@ export function generateDailyReport(): DailyReport {
   const allAgentIds = [...new Set([...metricsAgents, ...learningAgents, ...skillAgents])];
   const evaluations = allAgentIds.map(evaluateAgent).sort((a, b) => b.compositeScore - a.compositeScore);
 
-  const summary = formatTextReport(evaluations, date);
+  // Get infrastructure status from latest heartbeat
+  const heartbeat = getHeartbeatStatus();
+  const infrastructure: InfrastructureSummary[] = ((heartbeat as any)?.infrastructure || []).map((i: any) => ({
+    service: i.service,
+    currentStatus: i.status,
+    pid: i.pid,
+    uptimeSec: i.uptimeSec,
+  }));
+  // If no heartbeat data, mark as unknown
+  if (infrastructure.length === 0) {
+    infrastructure.push({
+      service: "openclaw-gateway",
+      currentStatus: "unknown",
+      pid: null,
+      uptimeSec: null,
+    });
+  }
+
+  const summary = formatTextReport(evaluations, date, infrastructure);
 
   const report: DailyReport = {
     date,
     generatedAt: new Date().toISOString(),
+    infrastructure,
     evaluations,
     summary,
   };
@@ -375,9 +403,22 @@ export function generateDailyReport(): DailyReport {
 /**
  * Format the report as a human-readable text summary.
  */
-function formatTextReport(evaluations: AgentEvaluation[], date: string): string {
+function formatTextReport(evaluations: AgentEvaluation[], date: string, infrastructure: InfrastructureSummary[]): string {
   const lines: string[] = [];
   lines.push(`📊 Agent 健康日报 — ${date}\n`);
+
+  // Infrastructure status
+  for (const infra of infrastructure) {
+    if (infra.currentStatus === "up") {
+      const hours = infra.uptimeSec != null ? (infra.uptimeSec / 3600).toFixed(1) : "?";
+      lines.push(`🏗️ 基础设施: ${infra.service} ✅ (PID ${infra.pid ?? "?"}, 运行 ${hours}h)`);
+    } else if (infra.currentStatus === "down") {
+      lines.push(`🚨 基础设施: ${infra.service} ❌ 离线!`);
+    } else {
+      lines.push(`🏗️ 基础设施: ${infra.service} ❓ (无心跳数据)`);
+    }
+  }
+  lines.push("");
 
   for (const ev of evaluations) {
     const trendStr = ev.trend > 0 ? `↑${ev.trend}` : ev.trend < 0 ? `↓${Math.abs(ev.trend)}` : "→";
