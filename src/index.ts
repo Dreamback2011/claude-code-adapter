@@ -70,6 +70,6 @@ app.listen(config.port, () => {
     }
   });
 
-  // Start cron scheduler (evaluation@23:00 + x-timeline@1h + heartbeat@13min)
+  // Start cron scheduler (evaluation@23:00 + alpha-timeline@1h + heartbeat@13min)
   setupCronScheduler();
 });
