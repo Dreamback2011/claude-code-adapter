@@ -497,13 +497,45 @@ function messagesHandler(config: ServerConfig) {
       }
 
       if (!res.headersSent) {
-        res.status(500).json({
-          type: "error",
-          error: {
-            type: "api_error",
-            message: err.message || "Internal server error",
-          },
-        });
+        if (body.stream) {
+          // Streaming request: must return SSE format, not JSON
+          const { v4: uuidv4 } = await import("uuid");
+          const msgId = `msg_${uuidv4().replace(/-/g, "").slice(0, 20)}`;
+          const errText = `⚠️ ${err.message || "Internal server error"}`;
+          res.setHeader("Content-Type", "text/event-stream");
+          res.setHeader("Cache-Control", "no-cache");
+          res.setHeader("Connection", "keep-alive");
+          const emit = (event: string, data: object) => {
+            res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+          };
+          emit("message_start", {
+            type: "message_start",
+            message: {
+              id: msgId, type: "message", role: "assistant", content: [],
+              model: body.model || "claude-code-cli",
+              stop_reason: null, stop_sequence: null,
+              usage: { input_tokens: 0, output_tokens: 0 },
+            },
+          });
+          emit("content_block_start", { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } });
+          emit("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: errText } });
+          emit("content_block_stop", { type: "content_block_stop", index: 0 });
+          emit("message_delta", { type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 0 } });
+          emit("message_stop", { type: "message_stop" });
+          res.end();
+        } else {
+          res.status(500).json({
+            type: "error",
+            error: {
+              type: "api_error",
+              message: err.message || "Internal server error",
+            },
+          });
+        }
+      } else {
+        // Headers already sent (streaming started) but error occurred — must close the connection
+        console.warn("[adapter] Error after headers sent, forcing stream close");
+        try { res.end(); } catch (_) { /* already closed */ }
       }
     } finally {
       releaseCLISlot();
