@@ -1,4 +1,5 @@
 import express from "express";
+import { readFile, writeFile } from "node:fs/promises";
 import { createAuthMiddleware } from "./auth.js";
 import { handleNonStreaming, handleStreaming } from "./adapter.js";
 import type { AnthropicRequest } from "./types.js";
@@ -362,6 +363,53 @@ export function createServer(config: ServerConfig) {
   app.get("/v1/memory/status", createAuthMiddleware(config.apiKey), (_req, res) => {
     const status = getSystemStatus();
     res.json(status);
+  });
+
+  // ── Agent Feedback ──────────────────────────────────────────────────────
+  const LEARNING_DIRS = [
+    `${process.env.HOME}/.openclaw/workspace/agents`,
+    `${process.env.HOME}/agents`,
+  ];
+
+  app.post("/v1/agent-feedback", createAuthMiddleware(config.apiKey), async (req, res) => {
+    const { agentId, rating, messageId } = req.body;
+
+    if (!agentId || !/^[a-zA-Z0-9-]+$/.test(agentId)) {
+      res.status(400).json({ error: "Invalid agentId (only a-zA-Z0-9- allowed)" });
+      return;
+    }
+    if (!["good", "bad"].includes(rating)) {
+      res.status(400).json({ error: "rating must be 'good' or 'bad'" });
+      return;
+    }
+
+    // Find learning.json in known locations
+    const paths = LEARNING_DIRS.map((dir) => `${dir}/${agentId}/learning.json`);
+    const found: string[] = [];
+    for (const p of paths) {
+      try { await readFile(p, "utf-8"); found.push(p); } catch {}
+    }
+
+    if (found.length === 0) {
+      res.status(404).json({ error: `No learning.json found for agent "${agentId}"` });
+      return;
+    }
+
+    // Update all found files
+    let lastUpdated: any;
+    for (const filePath of found) {
+      const data = JSON.parse(await readFile(filePath, "utf-8"));
+      if (rating === "good") data.goodRatings++;
+      else data.badRatings++;
+      data.lastRated = new Date().toISOString();
+      const total = data.goodRatings + data.badRatings;
+      data.qualityScore = total > 0 ? +(data.goodRatings / total).toFixed(4) : 1;
+      await writeFile(filePath, JSON.stringify(data, null, 2) + "\n");
+      lastUpdated = data;
+      console.log(`[agent-feedback] Updated ${filePath}: ${rating} (score=${data.qualityScore})`);
+    }
+
+    res.json({ updated: found.length, paths: found, learning: lastUpdated });
   });
 
   // ── Messages endpoint ──────────────────────────────────────────────────────
