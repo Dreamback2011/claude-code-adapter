@@ -46,14 +46,12 @@ Rules:
     const categoryHint = `
 ROUTING CATEGORIES (use these as primary signals — agentId must EXACTLY match the ID shown):
 - 💼 work           : BD strategy, crypto/Web3 industry, Bitget Wallet, partnerships, TradFi, WaaS, XRPL/Solana/Base
-- 📡 signal         : Price signals, alpha opportunities, regulatory risk, exchange events, on-chain data
+- 👁 alpha          : Price signals, alpha opportunities, regulatory risk, exchange events, on-chain data, X/Twitter timeline, tweets, social media monitoring, KOL, whale movement, market sentiment
 - 💪 health         : WHOOP data, recovery score, HRV, resting heart rate, sleep quality/stages, strain, workout data, biometrics, body measurement, weight, SpO2, skin temperature, 健康指标, 恢复, 心率, 睡眠
-- 🌱 life           : Diet, meal planning, travel, personal development, lifestyle coaching, habit building, daily routine (NOT biometric data queries)
 - 🤖 openclaw       : AI tools, Claude, MCP, automation, TypeScript/coding, OpenClaw configuration, skills
 - 📨 telegram       : Send Telegram messages, read chat history, search contacts, DM someone, reply to messages, TG
-- 📰 x-timeline     : X/Twitter timeline, tweets, social media monitoring
 - 🔔 github-updates : GitHub repo updates, git commits, rollback, checkpoint, deploy, CI/CD, self-repair, version tracking
-- 📎 general        : Everything else — general questions, writing, research, math, history, culture
+- 📎 general        : Everything else — general questions, writing, travel, personal development, research, math, history, culture
 `;
 
     const classificationPrompt = `${this.systemPrompt}

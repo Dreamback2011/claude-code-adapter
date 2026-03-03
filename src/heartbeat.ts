@@ -26,7 +26,7 @@ import { AGENTS_DIR } from "./paths.js";
 const AGENT_CHECK_TIMEOUT_MS = 90_000;
 
 /** Agents excluded from heartbeat (cron-only / non-interactive) */
-const EXCLUDED_AGENTS = ["x-timeline", "evaluator"];
+const EXCLUDED_AGENTS = ["alpha", "evaluator"];
 
 /** Critical infrastructure services to monitor */
 const INFRA_SERVICES = [

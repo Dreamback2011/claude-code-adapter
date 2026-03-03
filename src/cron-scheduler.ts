@@ -3,7 +3,7 @@
  *
  * Built-in tasks:
  *   - evaluation: daily at 23:00 (agent health report)
- *   - x-timeline: every 1 hour (scrape X/Twitter timeline + AI analysis)
+ *   - alpha-timeline: every 1 hour (scrape X/Twitter timeline + AI analysis)
  *   - rss-daily: daily at 22:00 UTC (RSS feed collection + AI summarization)
  *
  * Uses setTimeout/setInterval — no external cron library needed.
@@ -181,7 +181,7 @@ async function runEvaluation(): Promise<void> {
   runScheduledEvaluation();
 }
 
-// ─── Built-in: X-Timeline Task ──────────────────────────────────────────────
+// ─── Built-in: Alpha-Timeline Task ──────────────────────────────────────────
 
 const SCRAPER_PYTHON = `${process.env.HOME}/.openclaw/workspace/clawfeed-x/venv/bin/python3`;
 const SCRAPER_SCRIPT = `${process.env.HOME}/.openclaw/workspace/clawfeed-x/x_scraper.py`;
@@ -199,7 +199,7 @@ function runScraper(): Promise<string> {
       { timeout: SCRAPER_TIMEOUT_MS, maxBuffer: 10 * 1024 * 1024 },
       (error, stdout, stderr) => {
         if (stderr) {
-          console.log(`[x-timeline] scraper stderr: ${stderr.trim()}`);
+          console.log(`[alpha-timeline] scraper stderr: ${stderr.trim()}`);
         }
         if (error) {
           reject(new Error(`Scraper failed: ${error.message}`));
@@ -230,7 +230,7 @@ When presenting results:
 
 Chinese preferred.`;
 
-  const userMessage = `[cron: X-Timeline 每小时播报]
+  const userMessage = `[cron: Alpha-Timeline 每小时播报]
 
 以下是过去 1 小时从 X Timeline 抓取的 ${totalCount} 条推文 (${scrapedAt}):
 
@@ -263,7 +263,7 @@ ${tweetsJson}
   };
 
   const url = `http://127.0.0.1:${port}/v1/messages`;
-  console.log(`[x-timeline] Sending ${totalCount} tweets to adapter for analysis...`);
+  console.log(`[alpha-timeline] Sending ${totalCount} tweets to adapter for analysis...`);
 
   const response = await fetch(url, {
     method: "POST",
@@ -289,28 +289,28 @@ ${tweetsJson}
     .join("");
 
   if (aiText) {
-    console.log(`[x-timeline] AI analysis complete (${aiText.length} chars)`);
+    console.log(`[alpha-timeline] AI analysis complete (${aiText.length} chars)`);
     // Log a preview of the analysis
     const preview = aiText.slice(0, 300).replace(/\n/g, " ");
-    console.log(`[x-timeline] Preview: ${preview}...`);
+    console.log(`[alpha-timeline] Preview: ${preview}...`);
   } else {
-    console.warn(`[x-timeline] AI returned empty response`);
+    console.warn(`[alpha-timeline] AI returned empty response`);
   }
 }
 
 /**
- * Full X-Timeline execution flow:
+ * Full Alpha-Timeline execution flow:
  *   1. Run scraper
  *   2. Parse output
  *   3. Send to adapter for AI analysis
  */
 async function runXTimeline(): Promise<void> {
   // Step 1: Run scraper
-  console.log(`[x-timeline] Running scraper (timeout=${SCRAPER_TIMEOUT_MS / 1000}s)...`);
+  console.log(`[alpha-timeline] Running scraper (timeout=${SCRAPER_TIMEOUT_MS / 1000}s)...`);
   const rawOutput = await runScraper();
 
   if (!rawOutput || rawOutput.trim().length === 0) {
-    console.warn(`[x-timeline] Scraper returned empty output, skipping`);
+    console.warn(`[alpha-timeline] Scraper returned empty output, skipping`);
     return;
   }
 
@@ -319,14 +319,14 @@ async function runXTimeline(): Promise<void> {
   try {
     scraperData = JSON.parse(rawOutput);
   } catch (parseErr: any) {
-    console.error(`[x-timeline] Failed to parse scraper JSON: ${parseErr.message}`);
-    console.error(`[x-timeline] Raw output (first 500 chars): ${rawOutput.slice(0, 500)}`);
+    console.error(`[alpha-timeline] Failed to parse scraper JSON: ${parseErr.message}`);
+    console.error(`[alpha-timeline] Raw output (first 500 chars): ${rawOutput.slice(0, 500)}`);
     return;
   }
 
   // Check for scraper-level errors
   if (scraperData.error) {
-    console.error(`[x-timeline] Scraper error: ${scraperData.error}`);
+    console.error(`[alpha-timeline] Scraper error: ${scraperData.error}`);
     return;
   }
 
@@ -334,11 +334,11 @@ async function runXTimeline(): Promise<void> {
   const scrapedAt = scraperData.scraped_at || "unknown";
 
   if (totalTweets === 0) {
-    console.warn(`[x-timeline] 0 tweets scraped, skipping AI analysis`);
+    console.warn(`[alpha-timeline] 0 tweets scraped, skipping AI analysis`);
     return;
   }
 
-  console.log(`[x-timeline] Scraped ${totalTweets} tweets (${scrapedAt})`);
+  console.log(`[alpha-timeline] Scraped ${totalTweets} tweets (${scrapedAt})`);
 
   // Step 3: Send to adapter for AI analysis
   // Pass the full tweets JSON so the AI can see all data
@@ -513,9 +513,9 @@ export function setupCronScheduler(): void {
     callback: runEvaluation,
   });
 
-  // ── Task 2: X-Timeline — every 1 hour ──────────────────────────────────
+  // ── Task 2: Alpha-Timeline — every 1 hour ──────────────────────────────
   registerTask({
-    name: "x-timeline",
+    name: "alpha-timeline",
     intervalMs: 60 * 60 * 1000,  // 1 hour
     callback: runXTimeline,
   });
