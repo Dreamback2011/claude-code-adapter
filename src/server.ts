@@ -28,7 +28,7 @@ export interface ServerConfig {
 const sessions = new SessionStore(24);
 
 // Concurrency control: limit parallel CLI processes to prevent resource exhaustion
-const MAX_CONCURRENT = parseInt(process.env.MAX_CONCURRENT || "20", 10);
+const MAX_CONCURRENT = parseInt(process.env.MAX_CONCURRENT || "4", 10);
 let activeCLI = 0;
 const waitQueue: Array<() => void> = [];
 
