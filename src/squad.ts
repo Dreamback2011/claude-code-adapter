@@ -10,9 +10,9 @@ import { loadAgentDefinitions } from "./agents/agent-registry.js";
  *   💼 work     — BD, crypto, Bitget Wallet, partnerships
  *   📡 signal   — Price signals, alpha, regulatory risk
  *   🔬 research — 投研分析、美股、Crypto、宏观、时事
- *   🌱 life     — Health, lifestyle, travel, personal development
+ *   💪 health   — WHOOP biometrics, health monitoring, wellness
  *   🤖 openclaw — AI tools, Claude, automation, development
- *   📎 general  — Default fallback (everything else)
+ *   📎 general  — Default fallback (travel, personal dev, everything else)
  */
 export function createSquad(allowedTools: string): AgentSquad {
   const classifier = new CLIClassifier({ allowedTools });
