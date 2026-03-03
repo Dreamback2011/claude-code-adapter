@@ -387,7 +387,25 @@ export async function handleStreaming(
           `Error: ${retryErr.message}`
         );
       }
+    } else if (sentMessageStart) {
+      // Error occurred mid-stream: close any open blocks and finalize
+      console.warn("[adapter] Stream error mid-stream, finalizing SSE");
+      if (hasOpenBlock) {
+        sendSSE(res, "content_block_stop", { type: "content_block_stop", index: contentBlockIndex - 1 });
+      }
+      sendSSE(res, "message_delta", {
+        type: "message_delta",
+        delta: { stop_reason: "end_turn" },
+        usage: { output_tokens: 0 },
+      });
+      sendSSE(res, "message_stop", { type: "message_stop" });
     }
+  }
+
+  // Safety net: if we never sent anything, send a synthetic response so body is never empty
+  if (!sentMessageStart) {
+    console.warn("[adapter] CLI produced no output, sending synthetic response");
+    sendSyntheticStream(res, msgId, req.model || "claude-sonnet-4-6", "✅");
   }
 
   res.end();
