@@ -14,6 +14,7 @@ import { existsSync } from "fs";
 import { join } from "path";
 import { runHeartbeat } from "./heartbeat.js";
 import { PROJECT_ROOT } from "./paths.js";
+import { sendToChannel } from "./webhook-config.js";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -290,9 +291,16 @@ ${tweetsJson}
 
   if (aiText) {
     console.log(`[alpha-timeline] AI analysis complete (${aiText.length} chars)`);
-    // Log a preview of the analysis
-    const preview = aiText.slice(0, 300).replace(/\n/g, " ");
-    console.log(`[alpha-timeline] Preview: ${preview}...`);
+
+    // Deliver to Discord via webhook
+    const header = `🐦 **X Alpha 动态** | ${scrapedAt} (${totalCount} tweets)\n━━━━━━━━━━━━━━━━━━━━\n\n`;
+    const footer = `\n\n---\n_Agent: **Alpha Agent** | Cron: alpha-timeline_`;
+    try {
+      await sendToChannel("work", header + aiText + footer, "Alpha Agent 👁");
+      console.log(`[alpha-timeline] Delivered to Discord #work (${aiText.length} chars)`);
+    } catch (whErr: any) {
+      console.error(`[alpha-timeline] Discord delivery failed:`, whErr.message);
+    }
   } else {
     console.warn(`[alpha-timeline] AI returned empty response`);
   }
