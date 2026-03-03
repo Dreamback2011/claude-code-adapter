@@ -673,7 +673,7 @@ async function handleAgentSquad(
         },
       });
       emit("content_block_start", { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } });
-      emit("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "" } });
+      emit("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "✅" } });
       emit("content_block_stop", { type: "content_block_stop", index: 0 });
       emit("message_delta", { type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 0 } });
       emit("message_stop", { type: "message_stop" });
@@ -684,7 +684,7 @@ async function handleAgentSquad(
         id: `msg_${uuidv4().replace(/-/g, "").slice(0, 20)}`,
         type: "message",
         role: "assistant",
-        content: [{ type: "text", text: "" }],
+        content: [{ type: "text", text: "✅" }],
         model: body.model || "claude-code-cli",
         stop_reason: "end_turn",
         stop_sequence: null,
