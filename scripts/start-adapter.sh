@@ -10,4 +10,5 @@ for var in $(env | grep -oE '^CLAUDE_(CODE|AGENT)_[^=]+'); do
   unset "$var" 2>/dev/null
 done
 
+export NODE_OPTIONS="--max-old-space-size=192"
 exec /opt/homebrew/bin/npx tsx src/index.ts
