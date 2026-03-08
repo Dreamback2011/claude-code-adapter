@@ -91,7 +91,7 @@ function buildCLIOptions(
     prompt: buildPrompt(req.messages, !!cliSessionId),
     systemPrompt: extractSystemPrompt(req.system),
     allowedTools,
-    model: req.model || undefined,
+    model: req.model || process.env.CLAUDE_MODEL || undefined,
     sessionId: cliSessionId,
   };
 }
