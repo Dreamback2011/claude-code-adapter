@@ -306,26 +306,37 @@ export async function runHeartbeat(): Promise<void> {
     }
   }
 
-  // ─── Phase 2: Agent checks ────────────────────────────────────────────
+  // ─── Phase 2: Agent checks (parallel) ─────────────────────────────────
   const agentIds = getInteractiveAgentIds();
 
   if (agentIds.length === 0) {
     console.log("[heartbeat] No interactive agents found, skipping agent checks");
   } else {
-    console.log(`[heartbeat] Starting health check for ${agentIds.length} agents: ${agentIds.join(", ")}`);
+    console.log(`[heartbeat] Starting parallel health check for ${agentIds.length} agents: ${agentIds.join(", ")}`);
   }
 
-  const results: AgentCheckResult[] = [];
+  // Check all agents in parallel — adapter handles concurrency
+  const settled = await Promise.allSettled(
+    agentIds.map((agentId) => checkAgent(agentId))
+  );
 
-  // Check agents sequentially to avoid overwhelming the adapter
-  for (const agentId of agentIds) {
-    console.log(`[heartbeat] Checking ${agentId}...`);
-    const result = await checkAgent(agentId);
+  const results: AgentCheckResult[] = settled.map((outcome, i) => {
+    if (outcome.status === "fulfilled") {
+      return outcome.value;
+    }
+    // Should not happen (checkAgent catches internally), but handle gracefully
+    return {
+      agentId: agentIds[i],
+      status: "error" as const,
+      responseTimeMs: 0,
+      responsePreview: null,
+      error: outcome.reason?.message || "Unknown error",
+    };
+  });
 
+  for (const result of results) {
     const emoji = result.status === "ok" ? "🟢" : result.status === "timeout" ? "🟡" : "🔴";
-    console.log(`[heartbeat] ${emoji} ${agentId}: ${result.status} (${(result.responseTimeMs / 1000).toFixed(1)}s)`);
-
-    results.push(result);
+    console.log(`[heartbeat] ${emoji} ${result.agentId}: ${result.status} (${(result.responseTimeMs / 1000).toFixed(1)}s)`);
   }
 
   // Build summary

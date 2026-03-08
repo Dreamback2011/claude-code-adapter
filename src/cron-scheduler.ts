@@ -146,46 +146,53 @@ async function executeTask(task: CronTask): Promise<void> {
 function scheduleDailyTask(task: CronTask): void {
   if (task.atHour === null) return;
 
-  const now = new Date();
-  const nextRun = new Date(now);
-  nextRun.setHours(task.atHour, 0, 0, 0);
-
-  // If the target hour already passed today, schedule for tomorrow
-  if (now >= nextRun) {
-    nextRun.setDate(nextRun.getDate() + 1);
+  /** Calculate ms until next occurrence of task.atHour */
+  function msUntilNextRun(): number {
+    const now = new Date();
+    const target = new Date(now);
+    target.setHours(task.atHour!, 0, 0, 0);
+    if (now >= target) {
+      target.setDate(target.getDate() + 1);
+    }
+    return target.getTime() - now.getTime();
   }
 
-  const msUntilFirst = nextRun.getTime() - now.getTime();
-  task.nextRunAt = nextRun.toISOString();
+  /** Schedule one run, then chain the next */
+  function scheduleNext(): void {
+    const delayMs = msUntilNextRun();
+    task.nextRunAt = new Date(Date.now() + delayMs).toISOString();
 
-  const hoursUntil = (msUntilFirst / 3600000).toFixed(1);
-  console.log(`[cron] ${task.name}: first run in ${hoursUntil}h (at ${task.atHour}:00), then every 24h`);
+    const hoursUntil = (delayMs / 3600000).toFixed(1);
+    console.log(`[cron] ${task.name}: next run in ${hoursUntil}h (at ${task.atHour}:00)`);
 
-  task.timerId = setTimeout(async () => {
-    await executeTask(task);
-
-    // Schedule repeating every 24 hours
-    const oneDayMs = 24 * 60 * 60 * 1000;
-    task.timerId = setInterval(async () => {
-      task.nextRunAt = new Date(Date.now() + oneDayMs).toISOString();
+    task.timerId = setTimeout(async () => {
       await executeTask(task);
-    }, oneDayMs);
+      // Chain: recalculate for next day (always accurate)
+      scheduleNext();
+    }, delayMs);
+  }
 
-    // Update next run time after first execution
-    task.nextRunAt = new Date(Date.now() + oneDayMs).toISOString();
-  }, msUntilFirst);
+  scheduleNext();
 }
 
 /**
  * Schedule an interval-based task (e.g., every 1 hour).
  */
 function scheduleIntervalTask(task: CronTask): void {
-  task.nextRunAt = new Date(Date.now() + task.intervalMs).toISOString();
-
   const intervalDesc =
     task.intervalMs >= 3600000
       ? `${(task.intervalMs / 3600000).toFixed(1)}h`
       : `${(task.intervalMs / 60000).toFixed(0)}min`;
+
+  /** Schedule the next run after a delay, then chain subsequent runs */
+  function scheduleNext(delayMs: number): void {
+    task.nextRunAt = new Date(Date.now() + delayMs).toISOString();
+    task.timerId = setTimeout(async () => {
+      await executeTask(task);
+      // Chain: schedule next run after full interval
+      scheduleNext(task.intervalMs);
+    }, delayMs);
+  }
 
   // Check if this task ran recently (within 80% of its interval)
   const lastRunTimes = loadLastRunTimes();
@@ -193,23 +200,17 @@ function scheduleIntervalTask(task: CronTask): void {
   const cooldownMs = task.intervalMs * 0.8;
 
   if (lastRan && Date.now() - lastRan < cooldownMs) {
-    const agoMin = ((Date.now() - lastRan) / 60000).toFixed(1);
-    const nextInMs = task.intervalMs - (Date.now() - lastRan);
-    task.nextRunAt = new Date(Date.now() + nextInMs).toISOString();
-    console.log(`[cron] ${task.name}: skipping immediate run (last ran ${agoMin}min ago), next in ${(nextInMs / 60000).toFixed(1)}min, then every ${intervalDesc}`);
+    // Skipping immediate run — schedule for remaining time
+    const elapsedMs = Date.now() - lastRan;
+    const remainingMs = task.intervalMs - elapsedMs;
+    const agoMin = (elapsedMs / 60000).toFixed(1);
+    console.log(`[cron] ${task.name}: skipping immediate run (last ran ${agoMin}min ago), next in ${(remainingMs / 60000).toFixed(1)}min, then every ${intervalDesc}`);
+    scheduleNext(remainingMs);
   } else {
     console.log(`[cron] ${task.name}: runs every ${intervalDesc}`);
-    // Run first one immediately, then repeat
-    (async () => {
-      await executeTask(task);
-      task.nextRunAt = new Date(Date.now() + task.intervalMs).toISOString();
-    })();
+    // Run immediately, then chain
+    scheduleNext(0);
   }
-
-  task.timerId = setInterval(async () => {
-    task.nextRunAt = new Date(Date.now() + task.intervalMs).toISOString();
-    await executeTask(task);
-  }, task.intervalMs);
 }
 
 // ─── Built-in: Evaluation Task ──────────────────────────────────────────────
