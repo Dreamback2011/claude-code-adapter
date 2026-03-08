@@ -1,7 +1,7 @@
 /**
  * Heartbeat — Agent Health Check System
  *
- * Every 13 minutes (via CronScheduler), triggers each interactive agent
+ * Every 30 minutes (via CronScheduler), triggers each interactive agent
  * to perform a self-check by sending a real request through the adapter.
  *
  * This is NOT passive metrics reading — each agent independently processes
@@ -266,7 +266,7 @@ async function sendHeartbeatAlert(status: HeartbeatStatus): Promise<void> {
 
 /**
  * Run one heartbeat cycle: check all interactive agents sequentially.
- * Called by CronScheduler every 13 minutes.
+ * Called by CronScheduler every 30 minutes.
  */
 export async function runHeartbeat(): Promise<void> {
   const startTime = Date.now();

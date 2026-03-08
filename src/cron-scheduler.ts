@@ -11,7 +11,7 @@
  */
 
 import { execFile } from "child_process";
-import { existsSync } from "fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
 import { join } from "path";
 import { runHeartbeat } from "./heartbeat.js";
 import { PROJECT_ROOT } from "./paths.js";
@@ -53,6 +53,30 @@ export interface CronTaskStatus {
 // ─── Task Registry ──────────────────────────────────────────────────────────
 
 const tasks = new Map<string, CronTask>();
+
+/** Persisted last-run timestamps to prevent duplicate runs after restart */
+const LAST_RUN_FILE = join(process.env.HOME || "/tmp", ".openclaw", "cron", "scheduler-state.json");
+
+/** Load persisted task timestamps */
+function loadLastRunTimes(): Record<string, number> {
+  try {
+    return JSON.parse(readFileSync(LAST_RUN_FILE, "utf-8"));
+  } catch {
+    return {};
+  }
+}
+
+/** Save task timestamp after successful execution */
+function saveLastRunTime(taskName: string): void {
+  const state = loadLastRunTimes();
+  state[taskName] = Date.now();
+  try {
+    mkdirSync(join(process.env.HOME || "/tmp", ".openclaw", "cron"), { recursive: true });
+    writeFileSync(LAST_RUN_FILE, JSON.stringify(state, null, 2));
+  } catch (err: any) {
+    console.error(`[cron] Failed to persist state: ${err.message}`);
+  }
+}
 
 // ─── Core Functions ─────────────────────────────────────────────────────────
 
@@ -104,6 +128,7 @@ async function executeTask(task: CronTask): Promise<void> {
     task.lastStatus = "success";
     task.lastError = null;
     task.runCount++;
+    saveLastRunTime(task.name);
     console.log(`[cron] ✓ ${task.name} completed in ${durationMs}ms`);
   } catch (err: any) {
     const durationMs = Date.now() - startTime;
@@ -161,13 +186,25 @@ function scheduleIntervalTask(task: CronTask): void {
     task.intervalMs >= 3600000
       ? `${(task.intervalMs / 3600000).toFixed(1)}h`
       : `${(task.intervalMs / 60000).toFixed(0)}min`;
-  console.log(`[cron] ${task.name}: runs every ${intervalDesc}`);
 
-  // Run first one immediately, then repeat
-  (async () => {
-    await executeTask(task);
-    task.nextRunAt = new Date(Date.now() + task.intervalMs).toISOString();
-  })();
+  // Check if this task ran recently (within 80% of its interval)
+  const lastRunTimes = loadLastRunTimes();
+  const lastRan = lastRunTimes[task.name];
+  const cooldownMs = task.intervalMs * 0.8;
+
+  if (lastRan && Date.now() - lastRan < cooldownMs) {
+    const agoMin = ((Date.now() - lastRan) / 60000).toFixed(1);
+    const nextInMs = task.intervalMs - (Date.now() - lastRan);
+    task.nextRunAt = new Date(Date.now() + nextInMs).toISOString();
+    console.log(`[cron] ${task.name}: skipping immediate run (last ran ${agoMin}min ago), next in ${(nextInMs / 60000).toFixed(1)}min, then every ${intervalDesc}`);
+  } else {
+    console.log(`[cron] ${task.name}: runs every ${intervalDesc}`);
+    // Run first one immediately, then repeat
+    (async () => {
+      await executeTask(task);
+      task.nextRunAt = new Date(Date.now() + task.intervalMs).toISOString();
+    })();
+  }
 
   task.timerId = setInterval(async () => {
     task.nextRunAt = new Date(Date.now() + task.intervalMs).toISOString();
@@ -654,10 +691,10 @@ export function setupCronScheduler(): void {
     callback: runXTimeline,
   });
 
-  // ── Task 3: Heartbeat — every 13 minutes ────────────────────────────────
+  // ── Task 3: Heartbeat — every 30 minutes ────────────────────────────────
   registerTask({
     name: "heartbeat",
-    intervalMs: 13 * 60 * 1000,  // 13 minutes
+    intervalMs: 30 * 60 * 1000,  // 30 minutes
     callback: runHeartbeat,
   });
 
