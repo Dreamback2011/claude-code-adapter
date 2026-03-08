@@ -7,7 +7,8 @@
  *   - rss-daily: daily at 08:00 Dubai (RSS feed collection + AI summarization)
  *   - health-daily: daily at 10:00 Dubai (WHOOP data → AI analysis → Discord)
  *
- * Uses setTimeout/setInterval — no external cron library needed.
+ * Uses setTimeout chains — no external cron library needed.
+ * NOTE: atHour uses local server timezone (process.env.TZ or system default).
  */
 
 import { execFile } from "child_process";
@@ -23,7 +24,7 @@ interface CronTask {
   name: string;
   /** Interval in milliseconds (for repeating tasks) */
   intervalMs: number;
-  /** Specific hour to run at (0-23), or null for interval-based */
+  /** Specific hour to run at (0-23, local server timezone), or null for interval-based */
   atHour: number | null;
   /** The function to execute */
   callback: () => Promise<void> | void;
@@ -116,6 +117,12 @@ function registerTask(opts: {
  * Execute a task and update its stats.
  */
 async function executeTask(task: CronTask): Promise<void> {
+  // Concurrency lock: skip if this task is already running
+  if (task.lastStatus === "running") {
+    console.log(`[cron] ⏭ ${task.name}: skipped (previous run still in progress)`);
+    return;
+  }
+
   const startTime = Date.now();
   task.lastStatus = "running";
   task.lastRunAt = new Date().toISOString();
@@ -218,7 +225,7 @@ function scheduleIntervalTask(task: CronTask): void {
 async function runEvaluation(): Promise<void> {
   // Dynamic import to avoid circular dependencies
   const { runScheduledEvaluation } = await import("./agent-evaluation.js");
-  runScheduledEvaluation();
+  await runScheduledEvaluation();
 }
 
 // ─── Built-in: Alpha-Timeline Task ──────────────────────────────────────────
@@ -312,7 +319,7 @@ ${tweetsJson}
       "x-api-key": apiKey,
     },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(120_000), // 2 min timeout for AI analysis
+    signal: AbortSignal.timeout(180_000), // 3 min timeout for AI analysis
   });
 
   if (!response.ok) {
@@ -721,7 +728,7 @@ export function setupCronScheduler(): void {
   registerTask({
     name: "health-daily",
     intervalMs: 24 * 60 * 60 * 1000,  // 24h
-    atHour: 6,  // 06:00 UTC = 10:00 Dubai (GMT+4)
+    atHour: 6,  // 06:00 local time (server should be set to UTC for this to mean 10:00 Dubai)
     callback: runHealthDailyReport,
   });
 
